@@ -42,7 +42,9 @@ Verification module: `verify_image(content: bytes, content_type: str, *, expecte
 
 ## Dataset / style adapter
 
-`GdalRuntime(bin_dir: Path | str | None, *, expected_version: str | None = None)`; bin_dir explicit or packaged runtime only, never silently switch to system PATH. Methods `probe() -> dict`, `inspect(path, *, encoding=None, declared_crs=None) -> dict`. subprocess timeout, argument arrays, PROJ_NETWORK=OFF. Structured errors.
+`GdalRuntime(bin_dir: Path | str | None, *, expected_version: str | None = None, credential_env_names=())`; bin_dir explicit or packaged runtime only, never silently switch to system PATH. Methods `probe() -> dict`, `inspect(path, *, encoding=None, declared_crs=None) -> dict`. subprocess timeout, argument arrays, PROJ_NETWORK=OFF. Structured errors.
+
+GDAL subprocesses receive an explicit minimal OS environment rather than a copy of the parent environment. Default publishing credential names and configured `username_env` / `password_env` references are excluded case-insensitively, including references that overlap an otherwise allowed OS variable. Do not mutate the parent's environment: its credentials remain available to the HTTP client. Runtime PATH/data directories are controlled; inherited cloud credentials, proxy credentials, user profiles and arbitrary executable search paths are not forwarded. The plan builder and CLI doctor must pass the environment profile's credential reference names; the desktop uses the same plan builder. Windows compatibility of any environment-policy change needs a targeted native recheck.
 
 Inspection dict keys: `kind`, `source`, `components` (absolute path list), `crs` (EPSG or WKT), `native_bbox` [xmin,ymin,xmax,ymax], `wgs84_bbox` or null, `feature_count`, `geometry_type`, `fields` list, `band_count`, `warnings` list, `blocking_errors` list, `gdal_version`. Missing CRS or unconfirmed unknown encoding blocks; never infer from default. `.shp/.shx/.dbf` mandatory, `.prj` or explicit declared_crs; `.cpg` or explicit encoding. No automatic repair/reprojection in initial release.
 

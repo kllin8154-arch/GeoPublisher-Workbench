@@ -75,7 +75,11 @@ def build_plan(
     output = Path(output_dir).resolve()
     if output.exists():
         raise ConfigError("PLAN_EXISTS", "任务目录已经存在；请使用新目录，或恢复现有任务。")
-    runtime = GdalRuntime(environment.gdal_bin, expected_version=environment.gdal_version)
+    runtime = GdalRuntime(
+        environment.gdal_bin,
+        expected_version=environment.gdal_version,
+        credential_env_names=(environment.username_env, environment.password_env),
+    )
     capabilities = runtime.probe()
     paths = discover_sources([Path(p).absolute() for p in sources])
     if not paths:

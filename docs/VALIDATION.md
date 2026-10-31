@@ -57,6 +57,17 @@ python -m build --no-isolation      sdist + wheel built successfully
 
 已配置 `windows-latest` 与 `ubuntu-24.04` CI，以及 Windows PyInstaller 桌面预览构建。具体远程结果以对应 GitHub Actions 运行记录为准。
 
+首次远程运行 [Actions #1](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41222715209) 已触发，但两个 job 均未启动。GitHub 返回账户计费或消费额度限制。该结果是运行资源阻塞，不包含任何远程测试或 Windows 构建执行证据；不能据此宣称 Windows 已通过，也没有可下载的 Windows 构建产物。
+
+可在账户恢复 Actions 后重跑，或在已安装依赖的 Windows 电脑运行同一套测试与打包命令：
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+uv run --frozen --no-sync pytest -q
+Remove-Item Env:QT_QPA_PLATFORM
+uv run --frozen --no-sync pyinstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths src scripts/desktop_entry.py
+```
+
 本地上述结果来自 Linux；Windows 10/11 原生桌面、目标机器中文字体、完整 GDAL DLL 布局和内网离线启动尚待实机验收。PyInstaller 预览不包含 GDAL，因此不能当作完整可离线分发的安装包。
 
 ## 尚未完成的验收

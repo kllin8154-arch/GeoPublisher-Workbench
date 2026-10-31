@@ -62,7 +62,9 @@ def main(argv=None) -> int:
             environment = Environment.load(args.environment)
             result = {
                 "runtime": GdalRuntime(
-                    environment.gdal_bin, expected_version=environment.gdal_version
+                    environment.gdal_bin,
+                    expected_version=environment.gdal_version,
+                    credential_env_names=(environment.username_env, environment.password_env),
                 ).probe()
             }
             if not args.offline:

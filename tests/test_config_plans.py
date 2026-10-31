@@ -62,7 +62,7 @@ def inputs(tmp_path, monkeypatch):
     calls = {"probe": 0, "inspect": []}
 
     class SyntheticGdal:
-        def __init__(self, bin_dir, *, expected_version=None):
+        def __init__(self, bin_dir, *, expected_version=None, credential_env_names=()):
             assert bin_dir == "/unused-synthetic-gdal"
             assert expected_version == "3.13.3"
 

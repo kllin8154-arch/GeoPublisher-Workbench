@@ -1,5 +1,7 @@
 # Windows 本地验证报告（2026-11-01）
 
+阅读范围：第 1–6 节保留提交 `1e3e324` 的原始验证结论，其中 `310 passed, 4 skipped` 不代表后续补丁。PR #1 的独立 Windows 增量验证及门槛状态见 [第 7 节](#7-pr-1-凭据隔离补丁的-windows-增量验证)。
+
 ## 1. 结论
 
 本次在 Windows 10 原生环境中，使用一次性回环 GeoServer 2.24.4、受控 GDAL 3.13.3 和纯合成数据，完成了代码质量、Python 构建、原生桌面启动、离线预检以及真实 GeoServer 发布集成验证。
@@ -146,3 +148,95 @@ network OFF
 6. 由现场负责人提供脱敏后的目录字段映射，在测试库人工执行生成的 SQL，并分别核验唯一键、外键、触发器和页面可见性。
 
 只有 P0 全部关闭，并取得目标 Windows/Linux 离线包与现场测试环境的证据后，才建议将版本从“开发预览”提升为“可试运行候选”。
+
+## 7. PR #1 凭据隔离补丁的 Windows 增量验证
+
+### 7.1 版本与提交隔离
+
+2026-11-01，先将 README、验证汇总和本报告的原始版本独立提交为 `a1605db`，再创建 `validation/pr-1-windows-20261101`，合入 [PR #1](https://github.com/kllin8154-arch/GeoPublisher-Workbench/pull/1) 的 `d8bb6438c8aa27905480f67be47a6db72d89f638`。被测合并上下文为 `0318ad0`；其中 `src/`、`tests/` 和 `scripts/` 与该 PR 头提交一致，没有附加代码修改。
+
+使用原 Windows 10.0.19045、Python 3.12.12、uv 0.13.4、锁定的 GDAL 3.13.3 和 PySide6 6.12.0 环境。没有启动 GeoServer，没有执行 REST 写入或目录 SQL。旧版第 3.4 节的发布集成结果仍只归属于旧提交，本次按补丁影响范围验证本地子进程、预检与桌面计划生成。
+
+### 7.2 全量测试与原生用例执行证据
+
+| 检查 | 结果 |
+|---|---|
+| 全量 pytest | **332 passed, 4 skipped**，9.46 秒，共收集 336 项 |
+| 相对原版新增测试 | 22 项全部通过；原版 `310 passed, 4 skipped` 保留不变 |
+| Ruff | 通过 |
+| sdist / wheel | 构建成功 |
+| `uv lock --check --offline` | 通过 |
+| 真实子进程环境观察 | 默认、自定义、白名单冲突凭据均未透传；父环境未改变 |
+| 原生 GDAL 用例 | **实际执行，通过，未跳过**；8 次原生调用，JUnit 记录 1.040 秒 |
+
+原生用例为 `tests/test_datasets.py::test_selected_native_gdal_still_probes_and_resolves_crs_with_minimal_environment`。已解析 JUnit XML，确认该 testcase 存在且没有 `skipped`、`failure` 或 `error` 节点。它直接调用选定的 Windows `.exe`，验证版本、驱动、EPSG 解析与坐标变换；没有用 mock 返回值替代原生执行。
+
+4 个跳过项仍全部是 Windows 符号链接权限所致：
+
+- `tests/test_catalog.py:271`：1 项；
+- `tests/test_config_plans.py:309`：2 项；
+- `tests/test_datasets.py:447`：1 项。
+
+### 7.3 驱动、CRS、中文路径和凭据边界
+
+另行在含中文及空格的目录生成 5 份新合成数据，并通过 CLI 离线 doctor 和 plan 入口验证三种凭据引用：
+
+| 配置 | 离线 doctor | 中文路径计划 | 父进程凭据可读 | GDAL 子环境 |
+|---|---|---|---|---|
+| 默认 `GEOPUB_USERNAME` / `GEOPUB_PASSWORD` | AVAILABLE | ready，5 个资源 | 是 | 无默认或自定义凭据名/值 |
+| 自定义引用，配置使用混合大小写 | AVAILABLE | ready，5 个资源 | 是 | 无默认或自定义凭据名/值 |
+| 凭据引用与 `LANG` / `LC_ALL` 重名 | AVAILABLE | ready，5 个资源 | 是 | 重名凭据排除优先 |
+
+所有凭据值均为本机测试哨兵；结果只记录布尔值，不保存凭据值或完整环境转储。每次实际 `subprocess.run` 调用前检查子环境，同时仍执行真实 GDAL。父进程通过 `Environment.credentials()` 读取值，前后结果一致，完整父环境也保持不变。
+
+该独立验证共观察到 **71 次原生调用**：合成样本生成 12 次、版本/驱动/CRS/变换 8 次、三组 doctor 各 6 次、三组五资源预检各 11 次。全部成功，均没有携带测试凭据、代理或云凭据哨兵。PATH 仅为选定运行时的 `Library/bin`；GDAL_DATA 和 PROJ_DATA 指向该运行时，`proj.db` 存在，`PROJ_NETWORK=OFF`。
+
+ESRI Shapefile、GTiff、COG、VRT 四个驱动均可用；`gdalsrsinfo` 解析 EPSG:4326，`gdaltransform` 将 `(10, 20)` 转为 EPSG:3857 的约 `(1113194.90793, 2273030.92699)`，与预期一致。全部资源 CRS 为 EPSG:4326，源文件哈希前后相同。Python HTTP 请求拦截计数为 0；没有执行发布命令。
+
+### 7.4 原生桌面生成计划烟测
+
+使用 Qt `windows` 平台插件启动真实桌面，在含中文及空格的输入/输出路径中，通过 QTest 点击实际“检查并生成计划”按钮，等待真实后台 `build_plan()` 完成。
+
+| 检查 | 结果 |
+|---|---|
+| 原生字体 | 368 个字体族，Microsoft YaHei 可用，截图中文字正常 |
+| 后台计划生成 | 实际启动并完成，`ready: true` |
+| 资源 | 5 个，全部 EPSG:4326 |
+| 页面状态 | 进入检查预览，执行按钮可用 |
+| 原生 GDAL | 11 次，全部退出码 0，默认和自定义凭据名/值均未透传 |
+| 父进程凭据 | `Environment.credentials()` 读取正常 |
+| 输入文件 | 哈希不变 |
+| 网络与错误 | socket 连接尝试 0，无错误弹窗 |
+
+没有点击执行发布。该烟测覆盖桌面按钮到后台预检再到检查预览的路径，不替代完整桌面交互、可访问性或发布验收。
+
+### 7.5 证据与复验方法
+
+本机验证材料位于仓库外 `GeoPublisher-Workbench-validation/pr1-windows-20261101`，含离线验证脚本、合成样本、计划、JUnit、汇总 JSON 和桌面截图。未将本机环境档案、GIS 数据或截图中的绝对任务路径写入 Git。
+
+| 证据 | SHA256 |
+|---|---|
+| `pytest.xml` | `1d6c774745031b2dc3af0e0bc3fba49ffd0891fe6148c66b1f68304e655374bc` |
+| `native-results.json` | `76d80b8b98f027b23c31f0e04f7e4e31e4b58fd3f7757a18d3dcc376698d0bad` |
+| `desktop/desktop-plan-results.json` | `439b680019346e5450f0bcd8b153d2e235f3701e12deec18d07fd2cbd8eba759` |
+| `desktop/desktop-plan-native.png` | `07680030a0fefb78b0f022894f5d06c4ddde5a1bc6bb07edd91cf3ca15b7325e` |
+
+使用锁定运行时和项目虚拟环境复验；先准备依赖并执行 `pixi install --locked`，随后运行：
+
+```powershell
+$env:PYTHONUTF8 = '1'
+$env:QT_QPA_PLATFORM = 'offscreen'
+uv run --frozen --no-sync pytest -q -ra --junitxml=data/validation/pytest.xml
+uv run --frozen --no-sync pytest -v tests/test_datasets.py::test_selected_native_gdal_still_probes_and_resolves_crs_with_minimal_environment
+uv run --frozen --no-sync ruff check .
+uv run --frozen --no-sync python -m build --no-isolation
+Remove-Item Env:QT_QPA_PLATFORM
+```
+
+若原生用例显示跳过，应先补齐 `.pixi/envs/default/Library/bin` 下受控 GDAL，再验收；不能计为通过。中文路径与桌面烟测使用新任务目录，保留源哈希、实际子进程观察和计划结果，并按第 7.3–7.4 节逐项核验。
+
+### 7.6 门槛结论
+
+**PR #1 的 Windows 增量验证通过，可以合入主分支；第 5 节 P0 第 1 项“GDAL 子进程凭据继承”在该补丁中关闭。** 同时覆盖默认、自定义、大小写及白名单冲突引用；父进程凭据读取没有被破坏。
+
+完整离线包、多 TIFF 导入意图、WMS 内容验收、完整失败补偿、任务迁移和现场目录适配仍按 [后续验收门槛](RELEASE-GATES.md) 单独推进。远程 CI 资源限制未解除，本次通过依据是本机执行证据。

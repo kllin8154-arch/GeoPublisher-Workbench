@@ -16,6 +16,7 @@ import re
 import subprocess
 import tempfile
 import zipfile
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,71 @@ class DatasetError(ValueError):
 _SOURCE_SUFFIXES = {".shp", ".tif", ".tiff"}
 _SHP_SUFFIXES = (".shp", ".shx", ".dbf", ".prj", ".cpg")
 _IGNORED_DIRECTORIES = {"artifacts", "dist", "build", "runtimes", "node_modules"}
+_RUNTIME_OS_ENV = ("TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE")
+_DEFAULT_CREDENTIAL_ENV = ("GEOPUB_USERNAME", "GEOPUB_PASSWORD")
+
+
+def _gdal_environment(
+    bin_dir: Path,
+    parent: Mapping[str, str],
+    *,
+    windows: bool,
+    credential_env_names: Iterable[str] = (),
+) -> dict[str, str]:
+    """Build a minimal child environment without copying application secrets.
+
+    Temporary-directory and locale settings support native I/O. Windows also
+    needs SystemRoot for native assembly loading; WINDIR is retained for native
+    libraries that use it. Credentials take precedence over this allowlist.
+    The explicit platform argument makes Windows construction testable without
+    pretending a POSIX test executed a Windows binary.
+    """
+    excluded = {name.casefold() for name in (*_DEFAULT_CREDENTIAL_ENV, *credential_env_names)}
+    allowed = (*_RUNTIME_OS_ENV, "SystemRoot", "WINDIR") if windows else _RUNTIME_OS_ENV
+    # Windows environment names are case-insensitive. Only index names here:
+    # unrelated parent values (credentials, proxies, cloud config) are not read.
+    names = {name.casefold(): name for name in parent} if windows else {}
+    env: dict[str, str] = {}
+    for name in allowed:
+        if name.casefold() in excluded:
+            continue
+        source = names.get(name.casefold()) if windows else name
+        if source is not None and source in parent:
+            env[name] = parent[source]
+    if windows and not env.get("SystemRoot", "").strip():
+        raise DatasetError(
+            "GDAL_SYSTEM_ENV_REQUIRED",
+            "Windows GDAL 需要可用的 SystemRoot 系统变量；请保留系统环境，并使用独立的凭据变量名。",
+        )
+
+    prefix = bin_dir.parent
+    search_path = [str(bin_dir)]
+    # Windows conda installs DLLs under Library/bin. Never append the parent
+    # PATH, even when a non-self-contained runtime would otherwise need it.
+    library_bin = prefix / "Library" / "bin"
+    if windows and library_bin.is_dir() and library_bin != bin_dir:
+        search_path.append(str(library_bin))
+    env.update(
+        {
+            "PROJ_NETWORK": "OFF",
+            "GDAL_PAM_ENABLED": "NO",
+            "SHAPE_RESTORE_SHX": "NO",
+            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "",
+            "GDAL_DISABLE_READDIR_ON_OPEN": "FALSE",
+            "GDAL_CONFIG_FILE": "NUL" if windows else os.devnull,
+            "PATH": (";" if windows else ":").join(search_path),
+        }
+    )
+    # conda Unix prefix and conda Windows Library layout are both supported.
+    for candidate in (prefix / "share" / "gdal", prefix / "Library" / "share" / "gdal"):
+        if candidate.is_dir():
+            env["GDAL_DATA"] = str(candidate)
+            break
+    for candidate in (prefix / "share" / "proj", prefix / "Library" / "share" / "proj"):
+        if candidate.is_dir():
+            env["PROJ_DATA"] = str(candidate)
+            break
+    return env
 
 
 def _issue(code: str, message: str) -> dict[str, str]:
@@ -162,11 +228,21 @@ def _crs(coordinate_system: Any) -> str | None:
 
 
 class GdalRuntime:
-    """A selected and optionally version-pinned external GDAL command runtime."""
+    """A selected and optionally version-pinned external GDAL command runtime.
+
+    Pass the profile's credential environment *names*, never their values, so
+    credentials remain excluded even when a name overlaps the OS allowlist.
+    """
 
     COMMANDS = ("ogrinfo", "gdalinfo", "gdaltransform", "gdalsrsinfo")
 
-    def __init__(self, bin_dir: Path | str | None, *, expected_version: str | None = None):
+    def __init__(
+        self,
+        bin_dir: Path | str | None,
+        *,
+        expected_version: str | None = None,
+        credential_env_names: Iterable[str] = (),
+    ):
         if bin_dir is None:
             packaged = Path(__file__).resolve().parent / "runtime" / "bin"
             if not packaged.is_dir():
@@ -175,6 +251,11 @@ class GdalRuntime:
         self.bin_dir = Path(bin_dir).expanduser().resolve()
         if not self.bin_dir.is_dir():
             raise DatasetError("GDAL_NOT_FOUND", "指定的 GDAL 运行时目录不存在。")
+        if isinstance(credential_env_names, str):
+            raise DatasetError("GDAL_CREDENTIAL_ENV_INVALID", "凭据变量名必须按名称列表传入。")
+        self._credential_env_names = tuple(credential_env_names)
+        if any(not isinstance(name, str) or not name for name in self._credential_env_names):
+            raise DatasetError("GDAL_CREDENTIAL_ENV_INVALID", "凭据变量名必须为非空文本。")
         self.expected_version = expected_version
         self.timeout = 180.0
         self._capability: dict[str, Any] | None = None
@@ -188,33 +269,12 @@ class GdalRuntime:
         return str(executable)
 
     def _environment(self) -> dict[str, str]:
-        env = os.environ.copy()
-        # Never inherit another GIS installation's data/plugins/configuration.
-        for key in tuple(env):
-            if key.startswith(("GDAL_", "PROJ_", "CPL_", "OGR_", "SHAPE_", "QGIS_")):
-                del env[key]
-        prefix = self.bin_dir.parent
-        env.update(
-            {
-                "PROJ_NETWORK": "OFF",
-                "GDAL_PAM_ENABLED": "NO",
-                "SHAPE_RESTORE_SHX": "NO",
-                "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "",
-                "GDAL_DISABLE_READDIR_ON_OPEN": "FALSE",
-                "GDAL_CONFIG_FILE": os.devnull,
-                "PATH": str(self.bin_dir) + os.pathsep + env.get("PATH", ""),
-            }
+        return _gdal_environment(
+            self.bin_dir,
+            os.environ,
+            windows=os.name == "nt",
+            credential_env_names=self._credential_env_names,
         )
-        # conda Unix prefix and conda Windows Library layout are both supported.
-        for candidate in (prefix / "share" / "gdal", prefix / "Library" / "share" / "gdal"):
-            if candidate.is_dir():
-                env["GDAL_DATA"] = str(candidate)
-                break
-        for candidate in (prefix / "share" / "proj", prefix / "Library" / "share" / "proj"):
-            if candidate.is_dir():
-                env["PROJ_DATA"] = str(candidate)
-                break
-        return env
 
     def _run(self, command: str, arguments: list[str], *, input_text: str | None = None) -> str:
         try:

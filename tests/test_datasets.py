@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import zipfile
 from pathlib import Path
 
@@ -84,6 +86,256 @@ def test_runtime_environment_disables_network_and_foreign_configuration(tmp_path
     assert environment["SHAPE_RESTORE_SHX"] == "NO"
     assert environment.get("GDAL_DATA") != "/unexpected/qgis/share"
     assert environment["GDAL_PAM_ENABLED"] == "NO"
+
+
+@pytest.mark.parametrize("reserved_credentials", [False, True])
+def test_runtime_secrets_do_not_reach_real_child_process(tmp_path, monkeypatch, reserved_credentials):
+    """Exercise the real _run/subprocess path, using Python as an env observer."""
+    marker = "geopub-test-only-secret-sentinel"
+    private_names = (
+        "GEOPUB_USERNAME",
+        "GEOPUB_PASSWORD",
+        "gEoPuB_pAsSwOrD",
+        "SITE_ACCOUNT",
+        "SITE_ACCESS",
+        "UNRECOGNIZED_CUSTOM_SETTING",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_STORAGE_KEY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "https_proxy",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "NETRC",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "CONDA_PREFIX",
+        "GDAL_HTTP_HEADER_FILE",
+    )
+    for name in private_names:
+        monkeypatch.setenv(name, marker)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.setenv(name, str(tmp_path))
+    credential_names = ("SITE_ACCOUNT", "site_access")
+    if reserved_credentials:
+        private_names += ("TEMP", "LANG")
+        credential_names += ("tEmP", "lAnG")
+        monkeypatch.setenv("TEMP", marker)
+        monkeypatch.setenv("LANG", marker)
+    monkeypatch.setenv("PATH", marker)
+    runtime = GdalRuntime(tmp_path, credential_env_names=credential_names)
+    monkeypatch.setattr(runtime, "_executable", lambda name: sys.executable)
+    # Return booleans only, never an environment dump or a credential value.
+    script = (
+        "import json, os, tempfile\n"
+        f"blocked = {{name.casefold() for name in {private_names!r}}}\n"
+        "with tempfile.TemporaryFile() as stream:\n"
+        "    stream.write(b'local temporary I/O')\n"
+        "    temporary_ok = stream.tell() > 0\n"
+        "print(json.dumps({\n"
+        "    'private_names_absent': not any(name.casefold() in blocked for name in os.environ),\n"
+        f"    'sentinel_absent': not any({marker!r} in value for value in os.environ.values()),\n"
+        f"    'controlled_path': os.environ.get('PATH') == {str(runtime.bin_dir)!r},\n"
+        f"    'temporary_directory': os.path.normcase(tempfile.gettempdir()) == os.path.normcase({str(tmp_path)!r}),\n"
+        "    'temporary_io': temporary_ok,\n"
+        "    'offline': os.environ.get('PROJ_NETWORK') == 'OFF',\n"
+        "}))\n"
+    )
+    before = dict(os.environ)
+    observed = json.loads(runtime._run("ogrinfo", ["-I", "-c", script]))
+    # Assign before asserting so a failure cannot render the parent's secrets.
+    unchanged = dict(os.environ) == before
+    assert unchanged
+    assert observed == {
+        "private_names_absent": True,
+        "sentinel_absent": True,
+        "controlled_path": True,
+        "temporary_directory": True,
+        "temporary_io": True,
+        "offline": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "credential_name", ["TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "GDAL_CONFIG_FILE"]
+)
+def test_custom_credential_names_override_os_allowlist(tmp_path, monkeypatch, credential_name):
+    marker = "geopub-test-only-reserved-name-sentinel"
+    monkeypatch.setenv(credential_name, marker)
+    runtime = GdalRuntime(tmp_path, credential_env_names=(credential_name.swapcase(),))
+    environment = runtime._environment()
+    assert marker not in environment.values()
+    if credential_name not in {"PATH", "GDAL_CONFIG_FILE"}:
+        assert credential_name not in environment
+    # Parent configuration remains available to the HTTP client.
+    assert os.environ[credential_name] == marker
+
+
+def test_posix_environment_keeps_only_needed_locale_and_temp_settings(tmp_path):
+    parent = {
+        "TEMP": str(tmp_path),
+        "TMP": str(tmp_path),
+        "TMPDIR": str(tmp_path),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C",
+        "LC_CTYPE": "C.UTF-8",
+        "LC_CUSTOM_TOKEN": "test-secret",
+        "lang": "test-secret",
+        "SystemRoot": "test-secret",
+        "WINDIR": "test-secret",
+        "PATH": "test-secret",
+    }
+    environment = datasets._gdal_environment(tmp_path, parent, windows=False)
+    for key in ("TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"):
+        assert environment[key] == parent[key]
+    assert "test-secret" not in environment.values()
+    assert environment["PATH"] == str(tmp_path)
+
+
+def test_simulated_windows_environment_normalizes_case_and_excludes_credentials(tmp_path):
+    """Windows mapping semantics only; this does not execute Windows software."""
+    parent = {
+        "sYsTeMrOoT": r"C:\Windows",
+        "wInDiR": r"C:\Windows",
+        "tMp": str(tmp_path),
+        "tEmP": "test-secret",
+        "lAnG": "C.UTF-8",
+        "gEoPuB_pAsSwOrD": "test-secret",
+        "sItE_pAsS": "test-secret",
+        "pAtH": "test-secret",
+        "hOmE": "test-secret",
+        "hTtPs_PrOxY": "test-secret",
+    }
+    environment = datasets._gdal_environment(
+        tmp_path, parent, windows=True, credential_env_names=("TEMP", "SITE_PASS")
+    )
+    assert environment["SystemRoot"] == r"C:\Windows"
+    assert environment["WINDIR"] == r"C:\Windows"
+    assert environment["TMP"] == str(tmp_path)
+    assert environment["LANG"] == "C.UTF-8"
+    assert "TEMP" not in environment
+    assert "test-secret" not in environment.values()
+    assert environment["GDAL_CONFIG_FILE"] == "NUL"
+    assert environment["PATH"] == str(tmp_path)
+
+
+def test_simulated_windows_optional_names_can_be_missing_from_os_environ(tmp_path, monkeypatch):
+    # Unlike a plain dict, os.environ rejects a None lookup key. Exercise its
+    # actual mapping semantics while explicitly simulating only Windows casing.
+    monkeypatch.setenv("sYsTeMrOoT", r"C:\Windows")
+    for name in tuple(os.environ):
+        if name.casefold() in {"lang", "lc_all", "lc_ctype", "tmpdir"}:
+            monkeypatch.delenv(name)
+    environment = datasets._gdal_environment(tmp_path, os.environ, windows=True)
+    assert environment["SystemRoot"] == r"C:\Windows"
+    assert not {"LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"}.intersection(environment)
+
+
+@pytest.mark.parametrize(
+    "parent, credential_names",
+    [
+        ({"WINDIR": r"C:\Windows"}, ()),
+        ({"SystemRoot": ""}, ()),
+        ({"sYsTeMrOoT": "test-secret", "WINDIR": r"C:\Windows"}, ("SYSTEMROOT",)),
+    ],
+)
+def test_simulated_windows_missing_or_credential_systemroot_fails_safely(tmp_path, parent, credential_names):
+    with pytest.raises(DatasetError) as error:
+        datasets._gdal_environment(tmp_path, parent, windows=True, credential_env_names=credential_names)
+    assert error.value.code == "GDAL_SYSTEM_ENV_REQUIRED"
+    assert "test-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("layout", ["unix", "windows_library_bin", "windows_prefix_bin"])
+def test_runtime_data_and_dependency_paths_come_from_selected_installation(tmp_path, layout):
+    prefix = tmp_path / "selected"
+    windows = layout != "unix"
+    bin_dir = prefix / "Library" / "bin" if layout == "windows_library_bin" else prefix / "bin"
+    data_prefix = prefix / "Library" if windows else prefix
+    gdal_data, proj_data = data_prefix / "share" / "gdal", data_prefix / "share" / "proj"
+    for directory in (bin_dir, gdal_data, proj_data):
+        directory.mkdir(parents=True, exist_ok=True)
+    library_bin = prefix / "Library" / "bin"
+    if windows:
+        library_bin.mkdir(parents=True, exist_ok=True)
+    parent = {
+        "SystemRoot": r"C:\Windows",
+        "PATH": "foreign-runtime",
+        "GDAL_DATA": "foreign-data",
+        "PROJ_DATA": "foreign-data",
+        "PROJ_LIB": "foreign-data",
+        "GDAL_DRIVER_PATH": "foreign-plugins",
+        "GDAL_CONFIG_FILE": "foreign-config",
+        "PROJ_NETWORK": "ON",
+        "GDAL_PAM_ENABLED": "YES",
+        "SHAPE_RESTORE_SHX": "YES",
+    }
+    environment = datasets._gdal_environment(bin_dir, parent, windows=windows)
+    assert environment["GDAL_DATA"] == str(gdal_data)
+    assert environment["PROJ_DATA"] == str(proj_data)
+    assert "PROJ_LIB" not in environment
+    assert "GDAL_DRIVER_PATH" not in environment
+    expected_path = [str(bin_dir)]
+    if layout == "windows_prefix_bin":
+        expected_path.append(str(library_bin))
+    assert environment["PATH"] == (";" if windows else ":").join(expected_path)
+    assert environment["PROJ_NETWORK"] == "OFF"
+    assert environment["GDAL_PAM_ENABLED"] == "NO"
+    assert environment["SHAPE_RESTORE_SHX"] == "NO"
+    assert environment["GDAL_CONFIG_FILE"] == ("NUL" if windows else os.devnull)
+
+
+def test_selected_native_gdal_still_probes_and_resolves_crs_with_minimal_environment(monkeypatch):
+    """Run the installed native pixi runtime; skip rather than simulate if absent."""
+    prefix = Path(__file__).parents[1] / ".pixi" / "envs" / "default"
+    bin_dir = prefix / "Library" / "bin" if os.name == "nt" else prefix / "bin"
+    extension = ".exe" if os.name == "nt" else ""
+    if not all((bin_dir / (name + extension)).is_file() for name in GdalRuntime.COMMANDS):
+        pytest.skip("Native locked GDAL runtime is not installed on this platform")
+    marker = "geopub-test-only-native-gdal-sentinel"
+    for name in ("GEOPUB_PASSWORD", "SITE_ACCESS", "AWS_SESSION_TOKEN", "HTTPS_PROXY", "PATH"):
+        monkeypatch.setenv(name, marker)
+    runtime = GdalRuntime(bin_dir, expected_version="3.13.3", credential_env_names=("SITE_ACCESS",))
+    original_run = datasets.subprocess.run
+    native_calls = 0
+
+    def checked_native_run(*args, **kwargs):
+        nonlocal native_calls
+        clean = not any(marker in value for value in kwargs["env"].values())
+        assert clean
+        native_calls += 1
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(datasets.subprocess, "run", checked_native_run)
+    before = dict(os.environ)
+    capability = runtime.probe()
+    epsg = runtime._run("gdalsrsinfo", ["-o", "epsg", "EPSG:4326"])
+    projected = runtime._run(
+        "gdaltransform", ["-s_srs", "EPSG:4326", "-t_srs", "EPSG:3857"], input_text="10 20\n"
+    )
+    unchanged = dict(os.environ) == before
+    assert unchanged
+    assert native_calls == 8
+    assert capability["version"] == "3.13.3"
+    assert capability["drivers"]["ESRI Shapefile"] is True
+    assert capability["drivers"]["GTiff"] is True
+    assert "EPSG:4326" in epsg
+    assert list(map(float, projected.split()[:2])) == pytest.approx([1113194.9079327357, 2273030.9269876895])
+    environment = runtime._environment()
+    assert Path(environment["GDAL_DATA"]).is_dir()
+    assert (Path(environment["PROJ_DATA"]) / "proj.db").is_file()
 
 
 def test_inspection_handles_chinese_paths_and_known_encoding(tmp_path, monkeypatch):

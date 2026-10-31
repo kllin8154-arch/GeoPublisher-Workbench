@@ -2,7 +2,7 @@
 
 面向实施人员的 GeoServer 自动发布工作台。Python 核心同时驱动 CLI 和中文 PySide6 桌面界面：本地预检 → 冻结发布计划 → REST 发布 → WMS 实图验收 → 任务报告与目录绑定清单。
 
-**当前版本：0.1.0 开发预览。** 已在隔离的 GeoServer 2.24.4 和 GDAL 3.13.3 上完成合成数据发布、重复执行、配置清理及上传响应丢失验证。Windows 完整 GDAL 运行时与现场环境仍需原生验收；当前构建不等于可直接交付内网的离线安装包。
+**当前版本：0.1.0 开发预览。** 已在 Windows 10 和 Linux 的隔离环境中，使用 GeoServer 2.24.4、GDAL 3.13.3 与合成数据完成核心发布、重复执行、配置清理及上传响应丢失验证。Windows 原生桌面启动与字体烟测、受控 GDAL 已取得本地证据；完整 Windows/Linux 离线发行物与现场环境仍需验收，当前构建不等于可直接交付内网的离线安装包。详见 [验证汇总](docs/VALIDATION.md) 和 [Windows 本地验证报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。
 
 ![实际桌面运行结果](docs/images/desktop-preview.png)
 
@@ -42,7 +42,7 @@ uv run --frozen --no-sync geopub-desktop
 D:/Java-p/GeoPublisher-Workbench/.pixi/envs/default/Library/bin
 ```
 
-预期版本填 `3.13.3`。必须使用包含 GDAL、PROJ、所需 DLL 和数据目录的完整运行时，不能只复制几个 EXE。Windows 原生验证状态见 [验证记录](docs/VALIDATION.md)。
+预期版本填 `3.13.3`。必须使用包含 GDAL、PROJ、所需 DLL 和数据目录的完整运行时，不能只复制几个 EXE。Windows 原生验证状态见 [验证汇总](docs/VALIDATION.md) 和 [2026-11-01 详细报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。
 
 应用默认任务目录在存在 D 盘时为 `D:/a系统测试/GeoPublisher-Workbench`，也可自行选择。环境档案和任务产物应保存在本机 `data/` 或其他明确的数据目录，避免提交到 Git。
 

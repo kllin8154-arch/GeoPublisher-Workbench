@@ -2,6 +2,12 @@
 
 本记录区分本地实测、模拟故障测试和尚待现场验收的部分。所有 GIS 数据均由数学规则生成，没有使用真实项目数据或业务数据库。
 
+## 最新 Windows 本地验证
+
+2026-11-01 已在 Windows 10 原生环境完成 Python 构建、受控 GDAL 3.13.3、原生 Qt 桌面启动与字体烟测、离线计划及一次性 GeoServer 2.24.4 的真实集成验证：`310 passed, 4 skipped`，5 个资源 WMS 全部成功，4 个矢量资源 WFS 全部成功，同计划重跑新增操作记录为 0，精确清理移除 20 个本任务配置对象。
+
+该结果证明 Windows 核心受控链路可运行，但不代表完整离线发行物或生产验收通过。详细环境、结果矩阵、PRD 差距以及 P0/P1 阻断项见 [Windows 本地验证报告（2026-11-01）](VALIDATION-WINDOWS-2026-11-01.md)。
+
 ## 本地基线
 
 | 项目 | 实测环境 |
@@ -57,9 +63,9 @@ python -m build --no-isolation      sdist + wheel built successfully
 
 已配置 `windows-latest` 与 `ubuntu-24.04` CI，以及 Windows PyInstaller 桌面预览构建。具体远程结果以对应 GitHub Actions 运行记录为准。
 
-首次远程运行 [Actions #1](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41222715209) 已触发，但两个 job 均未启动。GitHub 返回账户计费或消费额度限制。该结果是运行资源阻塞，不包含任何远程测试或 Windows 构建执行证据；不能据此宣称 Windows 已通过，也没有可下载的 Windows 构建产物。
+首次远程运行 [Actions #1](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41222715209) 已触发，但两个 job 均未启动。GitHub 返回账户侧 runner 资源限制。该结果是运行资源阻塞，不包含任何远程测试或 Windows 构建执行证据；不能据此宣称 Windows 已通过，也没有可下载的 Windows 构建产物。
 
-可在账户恢复 Actions 后重跑，或在已安装依赖的 Windows 电脑运行同一套测试与打包命令：
+本地 Windows 10 已于 2026-11-01 完成同一 Python 测试、wheel/sdist、PyInstaller 预览、原生桌面启动、受控 GDAL 和一次性 GeoServer 集成检查。PyInstaller 预览构建成功，但其中仍不包含 GDAL/PROJ；详细结果见 [Windows 本地验证报告](VALIDATION-WINDOWS-2026-11-01.md)。以下命令可用于 Windows 本地复核；远程 CI 仍应在 runner 资源恢复后从 Actions 单独重跑：
 
 ```powershell
 $env:QT_QPA_PLATFORM = 'offscreen'
@@ -68,10 +74,13 @@ Remove-Item Env:QT_QPA_PLATFORM
 uv run --frozen --no-sync pyinstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths src scripts/desktop_entry.py
 ```
 
-本地上述结果来自 Linux；Windows 10/11 原生桌面、目标机器中文字体、完整 GDAL DLL 布局和内网离线启动尚待实机验收。PyInstaller 预览不包含 GDAL，因此不能当作完整可离线分发的安装包。
+Windows 10 本机已完成原生桌面启动与中文字体烟测，并验证 Pixi GDAL DLL 布局；这不包含布局、键盘、焦点和完整交互验收。Windows 11、目标 Linux、完整离线安装包及内网断网启动仍待目标机器验收。PyInstaller 预览不包含 GDAL，因此不能当作完整可离线分发的安装包。
 
 ## 尚未完成的验收
 
+- GDAL 子进程凭据环境白名单；当前实测会继承 `GEOPUB_PASSWORD`，属于生产发布阻断项。
+- 产品负责人确认是否接受当前“多 TIFF 独立图层”对原始 Mosaic/Pyramid 候选阻断要求的偏离。
+- Windows/Linux 完整离线包、断网安装、许可证清单及干净目标机验收。
 - 现场反向代理、证书链、账号权限及目标 GeoServer 版本。
 - 真实业务目录字段、默认值、唯一键、外键、触发器与页面可见性。
 - 1 GB TIFF、长时间上传、磁盘不足等容量与性能基准。

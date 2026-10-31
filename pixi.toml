@@ -1,0 +1,15 @@
+[workspace]
+name = "geopublisher-gdal"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64"]
+
+[dependencies]
+python = "3.12.*"
+gdal = "==3.13.3"
+
+[activation.env]
+PROJ_NETWORK = "OFF"
+
+[tasks]
+runtime-info = "gdalinfo --version"

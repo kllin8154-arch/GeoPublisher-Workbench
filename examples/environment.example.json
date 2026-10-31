@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "environment_key": "local-test",
+  "base_url": "http://127.0.0.1:8080/geoserver",
+  "workspace": "publisher_test",
+  "gdal_bin": "../.pixi/envs/default/bin",
+  "gdal_version": "3.13.3",
+  "username_env": "GEOPUB_USERNAME",
+  "password_env": "GEOPUB_PASSWORD",
+  "ca_bundle": null,
+  "allow_http": false,
+  "timeout": 120
+}

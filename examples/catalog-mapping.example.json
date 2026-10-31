@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "database": "postgresql",
+  "target_schema": "public",
+  "schema_verified": false,
+  "layer_order_start": 1,
+  "service": {
+    "table": "demo_mapservice",
+    "mode": "create",
+    "key": "service_key",
+    "unique_key_verified": false,
+    "columns": {
+      "service_key": { "source": "service_token" },
+      "service_title": { "value": "合成示例地图服务" },
+      "service_url": { "source": "wms_url" },
+      "created_task": { "source": "task_id" }
+    }
+  },
+  "layer": {
+    "table": "demo_maplayer",
+    "key": "layer_key",
+    "unique_key_verified": false,
+    "service_reference_column": "service_key",
+    "service_reference_verified": false,
+    "columns": {
+      "layer_key": { "source": "qualified_name" },
+      "service_key": { "source": "service_key" },
+      "layer_title": { "source": "title" },
+      "layer_name": { "source": "qualified_name" },
+      "srs": { "source": "crs" },
+      "lay_idx": { "source": "layer_index" },
+      "created_task": { "source": "task_id" }
+    }
+  }
+}

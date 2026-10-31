@@ -1,0 +1,47 @@
+name: Verify and build desktop preview
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PROJ_NETWORK: "OFF"
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: python -m pip install uv==0.13.4
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev --extra desktop --extra packaging
+      - name: Lint
+        run: uv run --frozen --no-sync ruff check .
+      - name: Tests
+        run: uv run --frozen --no-sync pytest -q
+      - name: Build Python wheel
+        run: uv run --frozen --no-sync python -m build --no-isolation
+      - name: Build Windows desktop preview
+        if: runner.os == 'Windows'
+        run: uv run --frozen --no-sync pyinstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths src scripts/desktop_entry.py
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: GeoPublisher-preview-${{ runner.os }}
+          path: dist/
+          retention-days: 14

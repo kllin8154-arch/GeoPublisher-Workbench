@@ -70,6 +70,22 @@ def _status_label(status: object) -> str:
     return _STATUS_NAMES.get(value, value)
 
 
+def _needs_raster_confirmation(plan: dict) -> bool:
+    return not isinstance(plan.get("import_intent"), dict) and sum(
+        resource.get("kind") == "geotiff" for resource in plan.get("resources", [])
+    ) > 1
+
+
+def _raster_summary(plan: dict) -> str:
+    if _needs_raster_confirmation(plan):
+        return "旧计划未记录多个 TIFF 分别发布的确认，请重新选择数据并生成计划。"
+    intent = plan.get("import_intent", {})
+    if intent.get("raster_mode") == "independent":
+        count = intent["raster_count"]
+        return f"影像发布方式：将 {count} 个 TIFF 分别发布为 {count} 个独立图层。"
+    return ""
+
+
 class SourceList(QListWidget):
     """Accept explicit local file/folder drops only; no automatic discovery."""
 
@@ -78,7 +94,7 @@ class SourceList(QListWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setMinimumHeight(130)
+        self.setMinimumHeight(96)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and all(url.isLocalFile() for url in event.mimeData().urls()):
@@ -264,7 +280,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        hint = QLabel("拖入 SHP、GeoTIFF 或目录。多个 TIFF 将分别发布为独立图层。")
+        hint = QLabel("拖入 SHP、GeoTIFF 或目录。Mosaic / Pyramid 拼接或金字塔数据暂不支持。")
         hint.setWordWrap(True)
         box.addWidget(hint)
         self.sources = SourceList()
@@ -285,6 +301,20 @@ class MainWindow(QMainWindow):
         self.source_count = QLabel("尚未添加数据")
         row.addWidget(self.source_count)
         box.addLayout(row)
+        self.independent_tiffs = QCheckBox("将所选 TIFF 分别发布为独立图层")
+        self.independent_tiffs.setToolTip(
+            "多个 TIFF 需确认分别发布；更改数据后需要重新确认。发现 Mosaic / Pyramid 结构时会停止检查。"
+        )
+        box.addWidget(self.independent_tiffs)
+        source_model = self.sources.model()
+        for signal in (
+            source_model.rowsInserted,
+            source_model.rowsRemoved,
+            source_model.rowsMoved,
+            source_model.dataChanged,
+            source_model.modelReset,
+        ):
+            signal.connect(self._sources_changed)
         form = QFormLayout()
         self.style_path = QLineEdit()
         self.style_path.setPlaceholderText("留空时使用按数据类型生成的简单样式")
@@ -319,13 +349,22 @@ class MainWindow(QMainWindow):
         self.inspect_button.clicked.connect(self._start_plan)
         box.addWidget(self.inspect_button, 0, Qt.AlignmentFlag.AlignRight)
         self._editable.extend(
-            (self.encoding, self.crs, self.target_name, self.strategy, self.wfs, self.inspect_button)
+            (
+                self.encoding,
+                self.crs,
+                self.target_name,
+                self.strategy,
+                self.wfs,
+                self.independent_tiffs,
+                self.inspect_button,
+            )
         )
         for edit in (self.style_path, self.crs, self.target_name, self.output_root):
             edit.textChanged.connect(self._invalidate_plan)
         self.encoding.currentIndexChanged.connect(self._invalidate_plan)
         self.strategy.currentIndexChanged.connect(self._invalidate_plan)
         self.wfs.toggled.connect(self._invalidate_plan)
+        self.independent_tiffs.toggled.connect(self._invalidate_plan)
         return page
 
     def _build_review(self) -> QWidget:
@@ -555,13 +594,23 @@ class MainWindow(QMainWindow):
             if value not in known:
                 self.sources.addItem(value)
                 known.add(value)
-        self.source_count.setText(f"已选择 {self.sources.count()} 个文件或目录")
-        self._invalidate_plan()
 
     def _clear_sources(self) -> None:
         self.sources.clear()
-        self.source_count.setText("尚未添加数据")
+        self._sources_changed()
+
+    def _sources_changed(self, *_: object) -> None:
+        if self._building_forms:
+            return
+        count = self.sources.count()
+        self.source_count.setText(f"已选择 {count} 个文件或目录" if count else "尚未添加数据")
+        self.independent_tiffs.setChecked(False)
         self._invalidate_plan()
+
+    def _can_execute_plan(self) -> bool:
+        return bool(
+            self._plan and self._plan.get("ready") and not _needs_raster_confirmation(self._plan)
+        )
 
     def _choose_sources(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "选择数据", "", "空间数据 (*.shp *.tif *.tiff)")
@@ -652,6 +701,7 @@ class MainWindow(QMainWindow):
             "sld": self.style_path.text().strip() or None,
             "target_name": self.target_name.text().strip() or None,
             "enable_wfs": self.wfs.isChecked(),
+            "raster_mode": "independent" if self.independent_tiffs.isChecked() else None,
         }
         self.activity.setText("正在检查数据并生成独立发布副本……")
         self._start_worker(lambda _: build_plan(env, source_paths, output, **options), self.review_plan)
@@ -661,9 +711,13 @@ class MainWindow(QMainWindow):
         self.folder_button.setEnabled(True)
         resources = plan.get("resources", [])
         env = plan["environment"]
-        self.plan_summary.setText(
+        summary = (
             f"目标：{env['base_url']}\n工作空间：{env['workspace']}  ·  {len(resources)} 个资源  ·  策略：{plan['strategy']}"
         )
+        raster_summary = _raster_summary(plan)
+        if raster_summary:
+            summary += "\n" + raster_summary
+        self.plan_summary.setText(summary)
         self.resources_table.setRowCount(len(resources))
         details = []
         for row, resource in enumerate(resources):
@@ -689,11 +743,15 @@ class MainWindow(QMainWindow):
                     details.append(f"  {label}：{message}")
         details.append("\n发布后将使用实际 WMS 地图验收。目录 SQL 如有生成，仍需另行登记。")
         self.check_details.setPlainText("\n".join(details))
-        self.execute_button.setEnabled(bool(plan.get("ready")) and self._thread is None)
+        self.execute_button.setEnabled(self._can_execute_plan() and self._thread is None)
         self.activity.setText(
-            "检查通过，执行前请确认目标环境。"
-            if plan.get("ready")
-            else "存在阻断问题。请调整数据或配置，再生成新计划。"
+            raster_summary
+            if _needs_raster_confirmation(plan)
+            else (
+                "检查通过，执行前请确认目标环境。"
+                if plan.get("ready")
+                else "存在阻断问题。请调整数据或配置，再生成新计划。"
+            )
         )
         self._navigate(0)
         self._set_step(1)
@@ -716,7 +774,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "无法恢复计划", str(exc))
 
     def _confirm_run(self) -> None:
-        if self._thread is not None or not self._plan or not self._plan.get("ready"):
+        if self._thread is not None or not self._can_execute_plan():
             return
         env = self._plan["environment"]
         user, password = self.session_username.text(), self.session_password.text()
@@ -725,9 +783,12 @@ class MainWindow(QMainWindow):
                 self, "凭据未完整填写", "请同时填写本次用户名和密码，或同时留空使用环境变量。"
             )
             return
+        raster_summary = _raster_summary(self._plan)
         message = (
             f"目标：{env['base_url']}\n工作空间：{env['workspace']}\n"
-            f"计划资源：{len(self._plan['resources'])} 个\n同名策略：{self._plan['strategy']}\n\n"
+            f"计划资源：{len(self._plan['resources'])} 个\n同名策略：{self._plan['strategy']}\n"
+            + (raster_summary + "\n" if raster_summary else "")
+            + "\n"
             "将执行此计划中的数据上传、图层创建和样式绑定，并保存验收报告。\n"
             "本版本不会原位覆盖已有数据，也不会执行数据库 SQL。"
         )
@@ -793,7 +854,7 @@ class MainWindow(QMainWindow):
         self.tasks_nav.setEnabled(not busy)
         self.settings_nav.setEnabled(not busy)
         self.history.setEnabled(not busy)
-        self.execute_button.setEnabled(not busy and bool(self._plan and self._plan.get("ready")))
+        self.execute_button.setEnabled(not busy and self._can_execute_plan())
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if busy else 1)
 

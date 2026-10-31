@@ -35,6 +35,11 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--sld", type=Path)
     plan.add_argument("--name", help="单数据集的服务图层名称")
     plan.add_argument("--wfs", action="store_true", help="矢量同时验收 WFS")
+    plan.add_argument(
+        "--raster-mode",
+        choices=["independent"],
+        help="明确将多个 TIFF 分别发布为独立图层；不能绕过 Mosaic/Pyramid 结构阻断",
+    )
     for verb, help_text in [
         ("run", "执行或恢复已确认的计划"),
         ("cleanup", "清理本任务拥有的服务配置，保留实际数据文件"),
@@ -84,12 +89,15 @@ def main(argv=None) -> int:
                 sld=args.sld,
                 target_name=args.name,
                 enable_wfs=args.wfs,
+                raster_mode=args.raster_mode,
             )
             _print(
                 {
                     "task_id": plan["task_id"],
                     "ready": plan["ready"],
                     "plan_path": str(Path(plan["output_dir"]) / "plan.json"),
+                    "raster_mode": plan["import_intent"]["raster_mode"],
+                    "raster_count": plan["import_intent"]["raster_count"],
                     "resources": [
                         {
                             "target_name": r["target_name"],
@@ -112,6 +120,8 @@ def main(argv=None) -> int:
                 "workspace": plan["environment"]["workspace"],
                 "resources": [r["target_name"] for r in plan["resources"]],
                 "strategy": plan["strategy"],
+                "raster_mode": plan.get("import_intent", {}).get("raster_mode", "legacy-unrecorded"),
+                "raster_count": sum(r["kind"] == "geotiff" for r in plan["resources"]),
             }
             if not args.yes:
                 _print(summary)

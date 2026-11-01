@@ -60,10 +60,11 @@ def inputs(tmp_path, monkeypatch):
     source = source_directory / "synthetic.tif"
     source.write_bytes(b"Synthetic raster payload; GDAL inspection is a test substitute.")
     calls = {"probe": 0, "inspect": []}
+    gdal_bin = str((tmp_path / "gdal-runtime").resolve())
 
     class SyntheticGdal:
         def __init__(self, bin_dir, *, expected_version=None, credential_env_names=()):
-            assert bin_dir == "/unused-synthetic-gdal"
+            assert bin_dir == gdal_bin
             assert expected_version == "3.13.3"
 
         def probe(self):
@@ -91,7 +92,7 @@ def inputs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(datasets, "GdalRuntime", SyntheticGdal)
     return SimpleNamespace(
-        environment=Environment(**profile()),
+        environment=Environment(**profile(gdal_bin=gdal_bin)),
         source=source,
         output=tmp_path / "task",
         calls=calls,

@@ -15,6 +15,7 @@
 - [x] WMS 空白主视图的有限象限补充检查与审计（非完整 Gate D）
 - [x] 隔离 GeoServer 2.24.4 上的真实 WMS 比例尺样式空白→局部出图回退；只读 GetMap 与业务发布复用同一核心
 - [x] 原生 GDAL 3.13.3 生成/预检 NoData 和 RGBA Alpha 数学合成 TIFF（仅本地前置，不代表服务端 WMS）
+- [x] 一次性 GeoServer 2.24.4 从停机准备的数学 TIFF 测试目录加载两个覆盖图层，真实 WMS 逐像素验证 NoData/Alpha（仅 WMS 子项，非正式 REST 发布）
 - [ ] 完整可再分发离线包（许可证合规、签名、干净机断网验收；详见 RELEASE-AUDIT）
 
 ## M2：现场试用

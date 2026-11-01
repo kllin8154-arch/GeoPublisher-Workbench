@@ -10,7 +10,7 @@ from .config import ConfigError, Environment
 from .geoserver import GeoServerClient, GeoServerError
 from .journal import Journal
 from .plans import fingerprint, save_json, validate_plan, verify_artifacts
-from .verification import verify_image
+from .verification import VerificationError, verify_image
 
 
 class RecoveryRequired(RuntimeError):
@@ -53,6 +53,22 @@ def _bbox(bounds: list[float]) -> list[float]:
     x0, y0, x1, y1 = map(float, bounds)
     dx, dy = max((x1 - x0) * 0.03, 0.0001), max((y1 - y0) * 0.03, 0.0001)
     return [max(-180.0, x0 - dx), max(-90.0, y0 - dy), min(180.0, x1 + dx), min(90.0, y1 + dy)]
+
+
+def _wms_review_bboxes(bounds: list[float]) -> list[list[float]]:
+    """Four deterministic zoomed windows within a known WGS84 data envelope.
+
+    Only used after a valid full-extent PNG needs review. Each window is a
+    read-only WMS GET; none is considered a geographic truth reference.
+    """
+    x0, y0, x1, y1 = map(float, bounds)
+    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+    return [
+        _bbox([x0, y0, mx, my]),
+        _bbox([mx, y0, x1, my]),
+        _bbox([x0, my, mx, y1]),
+        _bbox([mx, my, x1, y1]),
+    ]
 
 
 def cleanup_recovery_inventory(plan: dict, journal: Journal) -> dict:
@@ -361,7 +377,8 @@ class Publisher:
         self.checkpoint()
         self.journal.set_resource(self.task_id, rid, status="RUNNING", stage="VERIFY_WMS")
         self.event("VERIFY_WMS", f"{layer}：验证实际 WMS 地图", rid)
-        bbox = _bbox(resource["inspection"]["wgs84_bbox"])
+        native_bounds = resource["inspection"]["wgs84_bbox"]
+        bbox = _bbox(native_bounds)
         response = self.client.get_map(
             self.workspace, layer, bbox=bbox, crs="EPSG:4326", version="1.1.1", width=512, height=512
         )
@@ -369,8 +386,47 @@ class Publisher:
             response.content, response.headers.get("content-type", ""), expected_size=(512, 512)
         )
         preview = Path(self.plan["output_dir"]) / rid / "wms-preview.png"
-        # verify_image rejects XML/error responses before any preview is saved.
+        # The primary map must decode correctly; failures are never hidden by
+        # subsequent zoomed requests. Keep a real preview even when blank.
         preview.write_bytes(response.content)
+        samples = [{"bbox": bbox, "evidence": evidence}]
+        selected_sample = 0
+        # Sparse vectors and scale-dependent styles can look blank at the full
+        # extent. Try at most four read-only quadrant requests for evidence.
+        # A secondary failure is a review diagnostic, not an implicit pass.
+        if evidence["status"] != "PASSED":
+            for sample_bbox in _wms_review_bboxes(native_bounds):
+                self.checkpoint()
+                try:
+                    candidate = self.client.get_map(
+                        self.workspace,
+                        layer,
+                        bbox=sample_bbox,
+                        crs="EPSG:4326",
+                        version="1.1.1",
+                        width=512,
+                        height=512,
+                    )
+                    candidate_evidence = verify_image(
+                        candidate.content,
+                        candidate.headers.get("content-type", ""),
+                        expected_size=(512, 512),
+                    )
+                except (GeoServerError, VerificationError) as exc:
+                    samples.append(
+                        {
+                            "bbox": sample_bbox,
+                            "status": "REVIEW_REQUIRED",
+                            "code": exc.code,
+                        }
+                    )
+                    break
+                samples.append({"bbox": sample_bbox, "evidence": candidate_evidence})
+                if candidate_evidence["status"] == "PASSED":
+                    selected_sample = len(samples) - 1
+                    bbox, evidence = sample_bbox, candidate_evidence
+                    preview.write_bytes(candidate.content)
+                    break
         status = "SUCCEEDED" if evidence["status"] == "PASSED" else "REVIEW_REQUIRED"
         wfs = None
         if self.plan.get("enable_wfs") and resource["kind"] == "shapefile":
@@ -395,6 +451,12 @@ class Publisher:
                 "version": "1.1.1",
                 "crs": "EPSG:4326",
                 "evidence": evidence,
+                "selected_sample": selected_sample,
+                "samples": samples,
+                "note": (
+                    "WMS 像素与缩放窗口检查只能证明图像可解码且包含可见内容；"
+                    "不能代替地理位置、样式一致性或 NoData 实际语义的独立验证。"
+                ),
             },
             "wfs": wfs,
             "catalog_status": "NOT_REGISTERED",

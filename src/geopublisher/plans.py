@@ -150,6 +150,14 @@ def build_plan(
                     name=resource["style_name"],
                     geometry_type=info.get("geometry_type"),
                     band_count=info.get("band_count"),
+                    alpha_band=next(
+                        (
+                            band.get("band")
+                            for band in info.get("raster", {}).get("bands", [])
+                            if band.get("colorInterpretation") == "Alpha"
+                        ),
+                        None,
+                    ),
                 )
             style_result = validate_sld(
                 style_file, fields=info.get("fields") if info["kind"] == "shapefile" else None

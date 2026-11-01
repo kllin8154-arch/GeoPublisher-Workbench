@@ -379,3 +379,222 @@ def test_loading_another_profile_clears_session_credentials(window):
     window.apply_environment(window.environment())
     assert window.session_username.text() == ""
     assert window.session_password.text() == ""
+
+
+def test_advanced_options_are_optional_and_preserve_defaults(window):
+    assert not window.advanced_import_button.isChecked()
+    assert window.advanced_import_options.isHidden()
+    assert not window.advanced_settings_button.isChecked()
+    assert window.advanced_settings_options.isHidden()
+    assert window.encoding.currentData() is None
+    assert window.strategy.currentData() == "fail"
+    assert window.crs.text() == ""
+    assert window.style_path.text() == ""
+    window.advanced_import_button.click()
+    assert window.advanced_import_button.isChecked()
+    assert not window.advanced_import_options.isHidden()
+    window.advanced_import_button.click()
+    assert window.advanced_import_options.isHidden()
+    window.advanced_settings_button.click()
+    assert window.advanced_settings_button.isChecked()
+    assert not window.advanced_settings_options.isHidden()
+    assert window.session_password.echoMode() == window.session_password.EchoMode.Password
+
+
+def test_readonly_connection_success_uses_only_probe_and_workspace(window, monkeypatch):
+    calls = []
+
+    class FakeReadOnlyGeoServer:
+        def __init__(self, base_url, username, password, *, timeout, verify):
+            assert base_url == "http://127.0.0.1:8080/geoserver"
+            assert username == "operator"
+            assert password == "temporary-secret"
+            assert verify is True
+            calls.append("connect")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            calls.append("close")
+
+        def probe(self):
+            calls.append("probe")
+            return {"geoserver_version": "2.24.4"}
+
+        def get_workspace(self, workspace):
+            calls.append("workspace")
+            assert workspace == "test"
+            return {"name": workspace}
+
+    monkeypatch.setattr("geopublisher.geoserver.GeoServerClient", FakeReadOnlyGeoServer)
+    # The UI thread mechanics are already covered by existing worker tests.
+    monkeypatch.setattr(
+        window, "_start_worker",
+        lambda operation, completed: completed(operation(lambda _event: None)),
+    )
+    window.session_username.setText("operator")
+    window.session_password.setText("temporary-secret")
+    window._check_connection()
+    assert calls == ["connect", "probe", "workspace", "close"]
+    assert "连接成功" in window.connection_status.text()
+    assert "2.24.4" in window.connection_status.text()
+    assert "temporary-secret" not in window.connection_status.text()
+    assert not window._connection_testing
+    assert not (window._work_dir / "geopublisher.sqlite").exists()
+
+
+def test_connection_check_still_works_without_gdal_and_reports_missing_workspace(window, monkeypatch):
+    class NoWorkspace:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def probe(self):
+            return {"geoserver_version": "2.24.4"}
+
+        def get_workspace(self, workspace):
+            return None
+
+    window.gdal_bin.clear()
+    with pytest.raises(Exception):
+        window.environment()
+    assert window.environment(connection_only=True).gdal_bin == "READ_ONLY_CONNECTION_CHECK"
+    monkeypatch.setattr("geopublisher.geoserver.GeoServerClient", NoWorkspace)
+    monkeypatch.setattr(
+        window, "_start_worker",
+        lambda operation, completed: completed(operation(lambda _event: None)),
+    )
+    monkeypatch.setenv("GEOPUB_USERNAME", "test-operator")
+    monkeypatch.setenv("GEOPUB_PASSWORD", "test-secret")
+    window._check_connection()
+    assert "工作空间 test 不存在" in window.connection_status.text()
+    assert "请管理员先" in window.connection_status.text()
+
+
+def test_connection_input_errors_are_actionable_and_never_trigger_network(window, monkeypatch):
+    def unexpected_client(*_args, **_kwargs):
+        pytest.fail("Incomplete credentials must not initiate a network connection")
+
+    monkeypatch.setattr("geopublisher.geoserver.GeoServerClient", unexpected_client)
+    window.session_username.setText("one-sided")
+    window._check_connection()
+    assert window._thread is None
+    assert "同时填写" in window.connection_status.text()
+    window.session_username.clear()
+    window.base_url.setText("http://external.invalid/geoserver")
+    window._check_connection()
+    assert window._thread is None
+    assert "设置尚未完整" in window.connection_status.text()
+
+
+def test_connection_failure_does_not_destroy_existing_reviewed_plan(window, monkeypatch):
+    from geopublisher.geoserver import GeoServerError
+
+    class FailingReadOnlyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def probe(self):
+            raise GeoServerError("CONNECTION_ERROR", "GeoServer cannot be reached.")
+
+    monkeypatch.setattr("geopublisher.geoserver.GeoServerClient", FailingReadOnlyClient)
+
+    def execute_and_report_failure(operation, completed):
+        try:
+            completed(operation(lambda _event: None))
+        except GeoServerError as exc:
+            window._worker_failed({"code": exc.code, "message": str(exc)})
+
+    monkeypatch.setattr(window, "_start_worker", execute_and_report_failure)
+    monkeypatch.setenv("GEOPUB_USERNAME", "test-operator")
+    monkeypatch.setenv("GEOPUB_PASSWORD", "test-secret")
+    plan = sample_plan(window)
+    window.review_plan(plan)
+    window._check_connection()
+    assert window._plan is plan
+    assert window.execute_button.isEnabled()
+    assert "连接未通过" in window.connection_status.text()
+    assert "CONNECTION_ERROR" in window.connection_status.text()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("SUCCEEDED", "尚未登记"),
+        ("REVIEW_REQUIRED", "人工核对"),
+        ("MANUAL_ACTION_REQUIRED", "不要重新上传"),
+        ("SKIPPED", "不会更新"),
+        ("PARTIAL_SUCCESS", "部分图层"),
+        ("FAILED", "发布未完成"),
+        ("CANCELLED", "安全检查点"),
+    ],
+)
+def test_result_guidance_explains_next_action_in_plain_chinese(status, expected):
+    assert expected in desktop.result_next_action(status)
+
+
+def test_review_summary_uses_human_readable_strategy_and_result(window):
+    plan = sample_plan(window)
+    plan["strategy"] = "skip"
+    window.review_plan(plan)
+    assert "跳过同名图层（不更新）" in window.plan_summary.text()
+    assert "栅格 TIFF" == window.resources_table.item(0, 1).text()
+    assert "检查通过" in window.review_guidance.text()
+    plan["ready"] = False
+    plan["resources"][0]["blocking_errors"] = [{"code": "TEST", "message": "检查源文件"}]
+    window.review_plan(plan)
+    assert "阻断" in window.review_guidance.text()
+    assert not window.execute_button.isEnabled()
+
+
+def test_in_app_help_describes_three_steps_and_safe_behavior(window, monkeypatch):
+    dialogs = []
+    monkeypatch.setattr(
+        QMessageBox, "information",
+        lambda _parent, title, message, *_args: dialogs.append((title, message)),
+    )
+    window.help_button.click()
+    assert len(dialogs) == 1
+    title, message = dialogs[0]
+    assert "使用帮助" in title
+    assert "1." in message and "2." in message and "3." in message
+    assert "测试连接（只读）" in message
+    assert "不会自动写入" in message
+    assert "Mosaic/Pyramid" in message
+
+
+def test_basic_task_workflow_keeps_advanced_settings_hidden_by_default(window):
+    # Avoid native offscreen paint timing in Linux CI; real Windows screenshots
+    # verify actual rendering and Chinese font support separately.
+    assert not window.advanced_import_button.isChecked()
+    assert window.advanced_import_options.isHidden()
+    assert window.inspect_button.isEnabled()
+    assert window.help_button.isEnabled()
+    window._navigate(1)
+    assert window.pages.currentIndex() == 1
+    assert not window.advanced_settings_button.isChecked()
+    assert window.advanced_settings_options.isHidden()
+    assert window.connection_test_button.isEnabled()
+    window._navigate(0)
+    assert window.steps.currentIndex() == 0
+
+
+def test_server_connected_without_gdal_explains_remaining_local_requirement(window):
+    window.gdal_bin.clear()
+    window._show_connection_result({
+        "version": "2.24.4", "workspace_exists": True, "workspace": "test",
+    })
+    assert "连接成功" in window.connection_status.text()
+    assert "还需选择完整的受控 GDAL" in window.connection_status.text()

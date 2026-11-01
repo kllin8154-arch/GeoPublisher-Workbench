@@ -119,3 +119,25 @@ def test_unknown_geometry_has_no_silent_polygon_fallback(tmp_path):
     with pytest.raises(StyleError) as error:
         write_default_sld(tmp_path / "unknown.sld", name="unknown", geometry_type="GeometryCollection")
     assert error.value.code == "GEOMETRY_STYLE_UNSUPPORTED"
+
+
+def test_four_band_rgba_preserves_native_alpha_but_other_rgb_styles_choose_channels(tmp_path):
+    rgba_path = write_default_sld(
+        tmp_path / "rgba.sld", name="rgba", band_count=4, alpha_band=4
+    )
+    rgba_text = rgba_path.read_text(encoding="utf-8")
+    assert validate_sld(rgba_path)["valid"]
+    assert "RasterSymbolizer" in rgba_text
+    assert "ChannelSelection" not in rgba_text
+    assert "Opacity" in rgba_text
+
+    rgb_path = write_default_sld(tmp_path / "rgb.sld", name="rgb", band_count=3)
+    assert "ChannelSelection" in rgb_path.read_text(encoding="utf-8")
+    four_without_alpha = write_default_sld(
+        tmp_path / "four-multispectral.sld", name="multi", band_count=4
+    )
+    assert "ChannelSelection" in four_without_alpha.read_text(encoding="utf-8")
+
+    with pytest.raises(StyleError) as caught:
+        write_default_sld(tmp_path / "bad.sld", name="bad", band_count=4, alpha_band=5)
+    assert caught.value.code == "INVALID_ALPHA_BAND"

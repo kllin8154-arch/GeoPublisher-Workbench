@@ -43,6 +43,36 @@ from PySide6.QtWidgets import (
 from .config import ConfigError, Environment
 from .plans import build_plan, load_plan, save_json
 
+_STRATEGY_LABELS = {
+    "fail": "同名时停止（推荐）",
+    "skip": "跳过同名图层（不更新）",
+    "new-version": "新建独立图层版本",
+}
+_KIND_LABELS = {
+    "shapefile": "矢量 SHP",
+    "geotiff": "栅格 TIFF",
+}
+
+
+def result_next_action(status: str) -> str:
+    """A short, actionable explanation without implying business registration."""
+    if status == "SUCCEEDED":
+        return "服务已发布并通过基本 WMS 出图检查。请对照源数据核对位置、颜色和透明区域；业务目录尚未登记，需要另行确认 SQL。"
+    if status == "REVIEW_REQUIRED":
+        return "地图已返回，但自动检查无法确认内容正确。请检查下方预览与任务报告，人工核对后再用于业务系统。"
+    if status == "MANUAL_ACTION_REQUIRED":
+        return "服务器写入结果可能不确定。不要重新上传或直接删除，请打开报告，先核对服务器中的实际对象。"
+    if status == "PARTIAL_SUCCESS":
+        return "部分图层已完成。请逐项查看失败原因，保留已有成功结果，核对后再恢复任务。"
+    if status == "SKIPPED":
+        return "本次不会更新同名图层。旧图层仍在服务器上，不能把跳过视作新数据发布成功。"
+    if status in {"FAILED", "BLOCKED"}:
+        return "发布未完成。请查看运行详情和报告，修正数据或环境后再重新检查。"
+    if status == "CANCELLED":
+        return "已在安全检查点取消，已创建的资源可能仍保留。再次执行前请核对任务报告。"
+    return "请根据下方任务报告确认服务状态；业务目录不会自动登记。"
+
+
 _STATUS_NAMES = {
     "DRAFT": "草稿",
     "READY": "检查通过",
@@ -176,6 +206,7 @@ class MainWindow(QMainWindow):
         self._worker: _Worker | None = None
         self._worker_success: Callable | None = None
         self._cancel = threading.Event()
+        self._connection_testing = False
         self._building_forms = True
         self._preview_paths: list[Path] = []
         self._preview_pixmap: QPixmap | None = None
@@ -246,7 +277,7 @@ class MainWindow(QMainWindow):
         title = QLabel("发布任务")
         title.setObjectName("title")
         box.addWidget(title)
-        subtitle = QLabel("检查数据、确认计划，再将图层发布到指定 GeoServer。")
+        subtitle = QLabel("按 3 步完成：选择数据 → 本地检查 → 确认发布。首次使用请先完成「环境设置」。")
         subtitle.setObjectName("muted")
         box.addWidget(subtitle)
         toolbar = QHBoxLayout()
@@ -254,23 +285,27 @@ class MainWindow(QMainWindow):
         self.restore_button = QPushButton("恢复任务")
         self.history_button = QPushButton("任务历史")
         self.folder_button = QPushButton("打开任务目录")
+        self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
         for widget in (self.new_button, self.restore_button, self.history_button):
             toolbar.addWidget(widget)
             self._editable.append(widget)
         toolbar.addStretch()
+        toolbar.addWidget(self.help_button)
         toolbar.addWidget(self.folder_button)
         box.addLayout(toolbar)
         self.new_button.clicked.connect(self._new_task)
         self.restore_button.clicked.connect(self._choose_plan)
         self.history_button.clicked.connect(self._toggle_history)
         self.folder_button.clicked.connect(self._open_output)
+        self.help_button.clicked.connect(self._show_quick_help)
+        self._editable.append(self.help_button)
         self.history = QListWidget()
         self.history.setMaximumHeight(130)
         self.history.setVisible(False)
         self.history.itemDoubleClicked.connect(self._open_history)
         box.addWidget(self.history)
-        self.step_label = QLabel("1  选择数据")
+        self.step_label = QLabel("第 1 步 / 共 3 步 · 选择数据")
         self.step_label.setObjectName("step")
         box.addWidget(self.step_label)
         self.steps = QStackedWidget()
@@ -304,7 +339,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        hint = QLabel("拖入 SHP、GeoTIFF 或目录。Mosaic / Pyramid 拼接或金字塔数据暂不支持。")
+        hint = QLabel("第 1 步：把 SHP、TIFF 文件或文件夹拖入下方，也可以点「添加文件」。本步只处理本地数据，不会立即上传。")
         hint.setWordWrap(True)
         box.addWidget(hint)
         self.sources = SourceList()
@@ -325,6 +360,10 @@ class MainWindow(QMainWindow):
         self.source_count = QLabel("尚未添加数据")
         row.addWidget(self.source_count)
         box.addLayout(row)
+        self.source_hint = QLabel("支持 SHP（同目录包含 DBF/SHX/PRJ）和单个 GeoTIFF。多个 TIFF 需明确勾选独立发布；Mosaic/Pyramid 暂不支持。")
+        self.source_hint.setObjectName("muted")
+        self.source_hint.setWordWrap(True)
+        box.addWidget(self.source_hint)
         self.independent_tiffs = QCheckBox("将所选 TIFF 分别发布为独立图层")
         self.independent_tiffs.setToolTip(
             "多个 TIFF 需确认分别发布；更改数据后需要重新确认。发现 Mosaic / Pyramid 结构时会停止检查。"
@@ -339,36 +378,51 @@ class MainWindow(QMainWindow):
             source_model.modelReset,
         ):
             signal.connect(self._sources_changed)
-        form = QFormLayout()
-        self.style_path = QLineEdit()
-        self.style_path.setPlaceholderText("留空时使用按数据类型生成的简单样式")
-        form.addRow("SLD 样式", self._path_row(self.style_path, self._choose_style))
-        self.encoding = QComboBox()
-        self.encoding.addItem("使用 .cpg 声明", None)
-        self.encoding.addItem("UTF-8", "UTF-8")
-        self.encoding.addItem("GBK", "GBK")
-        self.crs = QLineEdit()
-        self.crs.setPlaceholderText("仅当已确认缺失 CRS 时填写，例如 EPSG:4326")
-        form.addRow("SHP 编码", self.encoding)
-        form.addRow("声明缺失 CRS", self.crs)
-        self.target_name = QLineEdit()
-        self.target_name.setPlaceholderText("留空时从文件名生成；单数据集可手工指定")
-        form.addRow("图层名称", self.target_name)
+        basic_form = QFormLayout()
         self.strategy = QComboBox()
         self.strategy.addItem("同名时停止（推荐）", "fail")
         self.strategy.addItem("跳过同名图层", "skip")
         self.strategy.addItem("创建独立新版本", "new-version")
-        form.addRow("同名处理", self.strategy)
-        self.wfs = QCheckBox("同时验收 WFS（仅在环境允许时启用）")
-        form.addRow("", self.wfs)
+        self.strategy.setToolTip("推荐保留「同名时停止」。跳过表示不会更新该图层；新版本会使用独立名称。")
+        basic_form.addRow("遇到同名图层", self.strategy)
         self.output_root = QLineEdit(str(self._work_dir))
-        form.addRow("任务产物目录", self._path_row(self.output_root, self._choose_output))
-        box.addLayout(form)
-        note = QLabel("检查会生成独立发布副本，保留源文件。坐标声明不会重投影数据。")
+        basic_form.addRow("任务记录保存到", self._path_row(self.output_root, self._choose_output))
+        box.addLayout(basic_form)
+        self.advanced_import_button = QPushButton("展开高级选项（样式、编码、坐标系、图层名称）")
+        self.advanced_import_button.setCheckable(True)
+        box.addWidget(self.advanced_import_button)
+        self.advanced_import_options = QWidget()
+        advanced_form = QFormLayout(self.advanced_import_options)
+        self.style_path = QLineEdit()
+        self.style_path.setPlaceholderText("留空时自动生成简单样式")
+        advanced_form.addRow("自定义 SLD 样式", self._path_row(self.style_path, self._choose_style))
+        self.encoding = QComboBox()
+        self.encoding.addItem("自动读取 .cpg", None)
+        self.encoding.addItem("UTF-8", "UTF-8")
+        self.encoding.addItem("GBK", "GBK")
+        self.crs = QLineEdit()
+        self.crs.setPlaceholderText("仅在已确认原数据坐标系时填写，如 EPSG:4326")
+        advanced_form.addRow("SHP 文字编码", self.encoding)
+        advanced_form.addRow("缺失时声明坐标系", self.crs)
+        self.target_name = QLineEdit()
+        self.target_name.setPlaceholderText("默认使用文件名；单个文件可指定")
+        advanced_form.addRow("自定义图层名称", self.target_name)
+        self.wfs = QCheckBox("额外检查 WFS（仅矢量，默认关闭）")
+        advanced_form.addRow("", self.wfs)
+        self.advanced_import_options.hide()
+        self.advanced_import_button.toggled.connect(self.advanced_import_options.setVisible)
+        self.advanced_import_button.toggled.connect(
+            lambda expanded: self.advanced_import_button.setText(
+                "收起高级选项" if expanded else "展开高级选项（样式、编码、坐标系、图层名称）"
+            )
+        )
+        self._editable.append(self.advanced_import_button)
+        box.addWidget(self.advanced_import_options)
+        note = QLabel("下一步只做本地预检并创建副本，不连接 GeoServer。源文件不变；声明坐标系也不会转换数据。")
         note.setObjectName("muted")
         box.addWidget(note)
         box.addStretch()
-        self.inspect_button = QPushButton("检查并生成计划")
+        self.inspect_button = QPushButton("下一步：检查数据")
         self.inspect_button.setObjectName("primary")
         self.inspect_button.clicked.connect(self._start_plan)
         box.addWidget(self.inspect_button, 0, Qt.AlignmentFlag.AlignRight)
@@ -399,6 +453,11 @@ class MainWindow(QMainWindow):
         self.plan_summary.setTextFormat(Qt.TextFormat.PlainText)
         self.plan_summary.setWordWrap(True)
         box.addWidget(self.plan_summary)
+        self.review_guidance = QLabel("请确认图层名称、坐标系和检查结果。只有预检通过才能进入发布。")
+        self.review_guidance.setObjectName("muted")
+        self.review_guidance.setTextFormat(Qt.TextFormat.PlainText)
+        self.review_guidance.setWordWrap(True)
+        box.addWidget(self.review_guidance)
         self.resources_table = QTableWidget(0, 4)
         self.resources_table.setHorizontalHeaderLabels(["目标图层", "类型", "坐标系", "检查结果"])
         self.resources_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -413,7 +472,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.back_button = QPushButton("调整数据")
         self.back_button.clicked.connect(lambda: self._set_step(0))
-        self.execute_button = QPushButton("确认并执行计划")
+        self.execute_button = QPushButton("确认并发布")
         self.execute_button.setObjectName("primary")
         self.execute_button.setEnabled(False)
         self.execute_button.clicked.connect(self._confirm_run)
@@ -437,6 +496,10 @@ class MainWindow(QMainWindow):
         self.result_summary.setWordWrap(True)
         self.result_summary.setObjectName("muted")
         box.addWidget(self.result_summary)
+        self.result_guidance = QLabel("完成后在这里显示下一步操作建议。")
+        self.result_guidance.setTextFormat(Qt.TextFormat.PlainText)
+        self.result_guidance.setWordWrap(True)
+        box.addWidget(self.result_guidance)
         self.preview_selector = QComboBox()
         self.preview_selector.currentIndexChanged.connect(self._select_preview)
         box.addWidget(self.preview_selector)
@@ -477,7 +540,7 @@ class MainWindow(QMainWindow):
         title = QLabel("环境设置")
         title.setObjectName("title")
         outer.addWidget(title)
-        hint = QLabel("首次保存环境档案，后续可重复使用。凭据值不写入档案或任务。")
+        hint = QLabel("首次使用只需填写服务器地址、工作空间和本次登录信息，再点「测试连接」。下方高级设置平时无需修改。")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         outer.addWidget(hint)
@@ -485,7 +548,9 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         inner = QWidget()
-        form = QFormLayout(inner)
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        form = QFormLayout()
         form.setVerticalSpacing(12)
         self.env_key = QLineEdit("local-test")
         self.base_url = QLineEdit("http://127.0.0.1:8080/geoserver")
@@ -507,21 +572,49 @@ class MainWindow(QMainWindow):
         self.session_password = QLineEdit()
         self.session_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.session_password.setPlaceholderText("仅保存在本次进程内存")
+        self.base_url.setToolTip("例如 https://your-geoserver.example/geoserver。默认的 127.0.0.1 地址仅是示例，并非已连接。")
+        self.workspace.setToolTip("GeoServer 中已创建的工作空间名称，不是数据库名称；工具不会自动创建。")
+        self.gdal_bin.setToolTip("便携版自动寻找随包的受控 GDAL；找不到时才需要手动选择目录。")
+        self.session_username.setToolTip("GeoServer 登录用户名，仅在本次会话内使用。")
+        self.session_password.setToolTip("GeoServer 登录密码，不会写入环境档案、任务计划或报告。")
         for label, widget in (
-            ("环境标识", self.env_key),
-            ("GeoServer 地址", self.base_url),
-            ("既有工作空间", self.workspace),
-            ("GDAL 工具目录", self._path_row(self.gdal_bin, self._choose_gdal)),
-            ("预期 GDAL 版本", self.gdal_version),
-            ("CA 证书", self._path_row(self.ca_bundle, self._choose_ca)),
-            ("", self.allow_http),
-            ("请求超时", self.timeout),
-            ("用户名变量名", self.username_env),
-            ("密码变量名", self.password_env),
+            ("环境名称", self.env_key),
+            ("GeoServer 服务地址", self.base_url),
+            ("已有工作空间", self.workspace),
+            ("GDAL 目录", self._path_row(self.gdal_bin, self._choose_gdal)),
             ("本次用户名", self.session_username),
             ("本次密码", self.session_password),
         ):
             form.addRow(label, widget)
+        inner_layout.addLayout(form)
+        tip = QLabel("提示：这里的默认服务器地址只是示例。先点「测试连接（只读）」，成功后再回到发布任务。")
+        tip.setObjectName("muted")
+        tip.setWordWrap(True)
+        inner_layout.addWidget(tip)
+        self.advanced_settings_button = QPushButton("展开高级设置（证书、超时、凭据变量等）")
+        self.advanced_settings_button.setCheckable(True)
+        inner_layout.addWidget(self.advanced_settings_button)
+        self.advanced_settings_options = QWidget()
+        advanced = QFormLayout(self.advanced_settings_options)
+        for label, widget in (
+            ("预期 GDAL 版本", self.gdal_version),
+            ("CA 证书", self._path_row(self.ca_bundle, self._choose_ca)),
+            ("", self.allow_http),
+            ("请求超时", self.timeout),
+            ("用户名环境变量", self.username_env),
+            ("密码环境变量", self.password_env),
+        ):
+            advanced.addRow(label, widget)
+        self.advanced_settings_options.hide()
+        self.advanced_settings_button.toggled.connect(self.advanced_settings_options.setVisible)
+        self.advanced_settings_button.toggled.connect(
+            lambda expanded: self.advanced_settings_button.setText(
+                "收起高级设置" if expanded else "展开高级设置（证书、超时、凭据变量等）"
+            )
+        )
+        self._editable.append(self.advanced_settings_button)
+        inner_layout.addWidget(self.advanced_settings_options)
+        inner_layout.addStretch()
         for edit in (
             self.env_key,
             self.base_url,
@@ -540,29 +633,101 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         outer.addWidget(scroll, 1)
         buttons = QHBoxLayout()
-        load = QPushButton("载入环境档案")
-        save = QPushButton("保存环境档案")
+        load = QPushButton("载入环境")
+        save = QPushButton("保存环境")
         clear = QPushButton("清除本次凭据")
+        self.connection_test_button = QPushButton("测试连接（只读）")
+        self.connection_test_button.setObjectName("primary")
         load.clicked.connect(self._choose_environment)
         save.clicked.connect(self._save_environment)
         clear.clicked.connect(self._clear_credentials)
-        for button in (load, save, clear):
+        self.connection_test_button.clicked.connect(self._check_connection)
+        for button in (load, save, clear, self.connection_test_button):
             buttons.addWidget(button)
             self._editable.append(button)
-        buttons.addStretch()
         outer.addLayout(buttons)
+        self.connection_status = QLabel("尚未测试连接。测试只读取服务器版本和工作空间，不会上传或修改数据。")
+        self.connection_status.setObjectName("muted")
+        self.connection_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.connection_status.setWordWrap(True)
+        outer.addWidget(self.connection_status)
+        for edit in (
+            self.env_key, self.base_url, self.workspace, self.ca_bundle,
+            self.username_env, self.password_env, self.session_username, self.session_password,
+        ):
+            edit.textChanged.connect(self._connection_invalidated)
+        self.allow_http.toggled.connect(self._connection_invalidated)
+        self.timeout.valueChanged.connect(self._connection_invalidated)
         return container
 
-    def environment(self) -> Environment:
+    def _connection_invalidated(self, *_: object) -> None:
+        if not self._building_forms:
+            self.connection_status.setText("连接信息已改变，请重新点「测试连接（只读）」。")
+
+    def _check_connection(self) -> None:
+        """Only GET /rest/about/version and GET the explicitly selected workspace."""
+        if self._thread is not None:
+            return
+        try:
+            env = self.environment(connection_only=True)
+        except ConfigError as exc:
+            self.connection_status.setText(f"设置尚未完整：{exc}。")
+            return
+        username, password = self.session_username.text(), self.session_password.text()
+        if bool(username) != bool(password):
+            self.connection_status.setText("请同时填写本次用户名和密码，或都留空并使用配置的环境变量。")
+            return
+
+        def probe(_on_event: Callable) -> dict:
+            from .geoserver import GeoServerClient
+
+            user, secret = (username, password) if username and password else env.credentials()
+            with GeoServerClient(
+                env.base_url, user, secret,
+                timeout=env.timeout, verify=env.ca_bundle or True,
+            ) as client:
+                info = client.probe()
+                workspace_exists = client.get_workspace(env.workspace) is not None
+            return {
+                "version": info.get("geoserver_version") or "未识别",
+                "workspace_exists": workspace_exists,
+                "workspace": env.workspace,
+            }
+
+        self._connection_testing = True
+        self.connection_status.setText("正在只读检测服务器版本和工作空间，不会上传或修改任何文件。")
+        self._start_worker(probe, self._show_connection_result)
+
+    def _show_connection_result(self, result: dict) -> None:
+        self._connection_testing = False
+        version = result.get("version", "未识别")
+        if result.get("workspace_exists"):
+            message = (
+                f"连接成功 · GeoServer {version} · 工作空间 {result['workspace']} 已存在。"
+                + (
+                    "发布前还需选择完整的受控 GDAL 目录。"
+                    if not self.gdal_bin.text().strip()
+                    else "可以返回「发布任务」选择数据。"
+                )
+            )
+        else:
+            message = (
+                f"服务器已连接（GeoServer {version}），但工作空间 {result['workspace']} 不存在。"
+                "请管理员先在 GeoServer 中创建工作空间，再发布。"
+            )
+        self.connection_status.setText(message)
+        self.activity.setText(message)
+
+    def environment(self, *, connection_only: bool = False) -> Environment:
         version = self.gdal_version.text().strip()
-        if not version:
+        if not version and not connection_only:
             raise ConfigError("GDAL_VERSION_REQUIRED", "请填写已验证的 GDAL 版本，避免无提示切换运行时。")
         return Environment(
             environment_key=self.env_key.text().strip(),
             base_url=self.base_url.text().strip(),
             workspace=self.workspace.text().strip(),
-            gdal_bin=self.gdal_bin.text().strip(),
-            gdal_version=version,
+            gdal_bin=self.gdal_bin.text().strip() or ("READ_ONLY_CONNECTION_CHECK" if connection_only else ""),
+            gdal_version=version or None,
             username_env=self.username_env.text().strip(),
             password_env=self.password_env.text().strip(),
             ca_bundle=self.ca_bundle.text().strip() or None,
@@ -588,6 +753,7 @@ class MainWindow(QMainWindow):
         self._clear_credentials()
         self._building_forms = False
         self._invalidate_plan()
+        self.connection_status.setText("已切换环境设置，请重新测试服务器连接（只读）。")
 
     def _navigate(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
@@ -596,7 +762,7 @@ class MainWindow(QMainWindow):
 
     def _set_step(self, index: int) -> None:
         self.steps.setCurrentIndex(index)
-        self.step_label.setText(("1  选择数据", "2  检查与预览", "3  发布与结果")[index])
+        self.step_label.setText(("第 1 步 / 共 3 步 · 选择数据", "第 2 步 / 共 3 步 · 检查与确认", "第 3 步 / 共 3 步 · 发布与结果")[index])
 
     def _invalidate_plan(self, *_: object) -> None:
         if self._building_forms:
@@ -736,7 +902,9 @@ class MainWindow(QMainWindow):
         resources = plan.get("resources", [])
         env = plan["environment"]
         summary = (
-            f"目标：{env['base_url']}\n工作空间：{env['workspace']}  ·  {len(resources)} 个资源  ·  策略：{plan['strategy']}"
+            f"准备发布到：{env['base_url']}\n"
+            f"工作空间：{env['workspace']}  ·  {len(resources)} 个图层  ·  "
+            f"同名处理：{_STRATEGY_LABELS.get(plan['strategy'], plan['strategy'])}"
         )
         raster_summary = _raster_summary(plan)
         if raster_summary:
@@ -744,13 +912,22 @@ class MainWindow(QMainWindow):
         self.plan_summary.setText(summary)
         self.resources_table.setRowCount(len(resources))
         details = []
+        blocked_count = sum(len(item.get("blocking_errors", [])) for item in resources)
+        warning_count = sum(len(item.get("warnings", [])) for item in resources)
+        if not plan.get("ready") or blocked_count:
+            advice = f"有 {blocked_count} 项阻断问题，需要调整数据后重新检查；暂时不能发布。"
+        elif _needs_raster_confirmation(plan):
+            advice = "多个 TIFF 的独立发布确认尚未记录。返回上一步明确勾选，再重新检查。"
+        else:
+            advice = f"检查通过。共有 {warning_count} 条提醒，请核对下方信息，再按「确认并发布」。"
+        self.review_guidance.setText(advice)
         for row, resource in enumerate(resources):
             errors, warnings = resource.get("blocking_errors", []), resource.get("warnings", [])
             inspection = resource.get("inspection", {})
             state = "阻断" if errors else ("通过，有提示" if warnings else "通过")
             values = (
                 resource["target_name"],
-                resource.get("kind", ""),
+                _KIND_LABELS.get(resource.get("kind", ""), resource.get("kind", "")),
                 inspection.get("crs") or "未确认",
                 state,
             )
@@ -809,12 +986,13 @@ class MainWindow(QMainWindow):
             return
         raster_summary = _raster_summary(self._plan)
         message = (
-            f"目标：{env['base_url']}\n工作空间：{env['workspace']}\n"
-            f"计划资源：{len(self._plan['resources'])} 个\n同名策略：{self._plan['strategy']}\n"
+            f"准备发布到：{env['base_url']}\n工作空间：{env['workspace']}\n"
+            f"本次图层：{len(self._plan['resources'])} 个\n"
+            f"同名处理：{_STRATEGY_LABELS.get(self._plan['strategy'], self._plan['strategy'])}\n"
             + (raster_summary + "\n" if raster_summary else "")
-            + "\n"
-            "将执行此计划中的数据上传、图层创建和样式绑定，并保存验收报告。\n"
-            "本版本不会原位覆盖已有数据，也不会执行数据库 SQL。"
+            + "\n确认后才会向 GeoServer 上传副本、创建图层和样式，并请求 WMS 验证。\n"
+            "源文件不会被修改；已有数据不会原位覆盖；业务目录/数据库不会自动写入。\n"
+            "如果发布中断，请先检查任务报告，不要直接重复上传。"
         )
         answer = QMessageBox.question(
             self,
@@ -832,8 +1010,9 @@ class MainWindow(QMainWindow):
         self._set_step(2)
         self.run_log.clear()
         self.result_title.setText("正在发布")
-        self.result_summary.setText(f"工作空间：{env['workspace']}  ·  {len(plan['resources'])} 个资源")
-        self.detail_button.setChecked(True)
+        self.result_summary.setText(f"工作空间：{env['workspace']}  ·  {len(plan['resources'])} 个图层")
+        self.result_guidance.setText("正在执行已确认的任务。下方将显示地图预览；需要排查时可展开「运行详情」。")
+        self.detail_button.setChecked(False)
         self.preview.clear()
         self.preview.setText("等待 GeoServer 实际 WMS 地图。")
         self.preview_selector.clear()
@@ -891,6 +1070,10 @@ class MainWindow(QMainWindow):
     def _worker_failed(self, error: dict) -> None:
         message = f"{error['code']}：{error['message']}"
         self.activity.setText(message)
+        if self._connection_testing:
+            self.connection_status.setText("连接未通过：" + message + "。请检查服务器地址、工作空间和凭据。")
+            self._connection_testing = False
+            return
         if self.steps.currentIndex() == 2:
             self.result_title.setText("执行未完成，请核对任务状态")
             self.run_log.appendPlainText(message)
@@ -928,6 +1111,7 @@ class MainWindow(QMainWindow):
         status = result.get("status", "MANUAL_ACTION_REQUIRED")
         self._set_step(2)
         self.result_title.setText(_status_label(status))
+        self.result_guidance.setText(result_next_action(str(status)))
         self.activity.setText(
             f"任务状态：{_status_label(status)}。服务发布状态与业务目录登记状态请分别查看。"
         )
@@ -1020,6 +1204,21 @@ class MainWindow(QMainWindow):
         self.run_log.clear()
         self._report_path = None
         self.report_button.setEnabled(False)
+        self.result_guidance.setText("完成后在这里显示下一步操作建议。")
+
+    def _show_quick_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "GeoPublisher 使用帮助",
+            "首次使用（建议先完成环境设置）：\n"
+            "1. 填写 GeoServer 地址、工作空间和本次账号密码，点「测试连接（只读）」。\n"
+            "2. 返回发布任务，拖入 SHP 或 TIFF；保持默认设置，点「下一步：检查数据」。\n"
+            "3. 确认图层、坐标系和提示，点「确认并发布」。完成后查看地图预览。\n\n"
+            "遇到复杂样式、编码或缺失坐标系，再展开高级选项。\n"
+            "多个 TIFF 必须明确按独立图层发布；Mosaic/Pyramid 拼接暂不支持。\n"
+            "遇到失败或未知结果，请先阅读任务报告，不要盲目重试。\n"
+            "数据源保持不变，业务数据库不会自动写入。",
+        )
 
     def _toggle_history(self) -> None:
         self._refresh_history()

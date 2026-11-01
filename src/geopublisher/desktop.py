@@ -65,6 +65,30 @@ def default_work_dir() -> Path:
     return Path.cwd() / "data"
 
 
+def controlled_gdal_bin() -> str:
+    """Locate only this application's locked runtime, never system PATH or QGIS.
+
+    Frozen releases keep the versioned GIS runtime next to the application,
+    under runtime/. Source checkouts use their own Pixi environment. Failure to
+    find a *complete* layout leaves the field empty for explicit configuration.
+    """
+    if getattr(sys, "frozen", False):
+        prefix = Path(sys.executable).resolve().parent / "runtime"
+    else:
+        prefix = Path(__file__).resolve().parents[2] / ".pixi" / "envs" / "default"
+    windows = os.name == "nt"
+    library = prefix / "Library" if windows else prefix
+    bin_dir = library / "bin"
+    binaries = ("gdalinfo.exe", "ogrinfo.exe") if windows else ("gdalinfo", "ogrinfo")
+    if (
+        all((bin_dir / name).is_file() for name in binaries)
+        and (library / "share" / "gdal").is_dir()
+        and (library / "share" / "proj" / "proj.db").is_file()
+    ):
+        return str(bin_dir)
+    return ""
+
+
 def _status_label(status: object) -> str:
     value = str(status)
     return _STATUS_NAMES.get(value, value)
@@ -466,7 +490,7 @@ class MainWindow(QMainWindow):
         self.env_key = QLineEdit("local-test")
         self.base_url = QLineEdit("http://127.0.0.1:8080/geoserver")
         self.workspace = QLineEdit("geopub")
-        self.gdal_bin = QLineEdit()
+        self.gdal_bin = QLineEdit(controlled_gdal_bin())
         self.gdal_bin.setPlaceholderText("选择包含 gdalinfo、ogrinfo 等命令的受控目录")
         self.gdal_version = QLineEdit("3.13.3")
         self.ca_bundle = QLineEdit()

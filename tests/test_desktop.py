@@ -27,6 +27,27 @@ from geopublisher.datasets import DatasetError  # noqa: E402
 from geopublisher.desktop import MainWindow  # noqa: E402
 
 
+def test_controlled_gdal_autodiscovery_only_accepts_complete_bundled_runtime(monkeypatch, tmp_path):
+    """A portable build must not silently choose an unknown system GDAL."""
+    exe = tmp_path / "GeoPublisher-Workbench.exe"
+    monkeypatch.setattr(desktop.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop.sys, "executable", str(exe))
+    assert desktop.controlled_gdal_bin() == ""
+
+    root = tmp_path / "runtime"
+    library = root / "Library" if os.name == "nt" else root
+    bin_dir = library / "bin"
+    bin_dir.mkdir(parents=True)
+    binaries = ("gdalinfo.exe", "ogrinfo.exe") if os.name == "nt" else ("gdalinfo", "ogrinfo")
+    for name in binaries:
+        (bin_dir / name).write_bytes(b"test")
+    (library / "share" / "gdal").mkdir(parents=True)
+    assert desktop.controlled_gdal_bin() == ""
+    (library / "share" / "proj").mkdir(parents=True)
+    (library / "share" / "proj" / "proj.db").write_bytes(b"test")
+    assert desktop.controlled_gdal_bin() == str(bin_dir)
+
+
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])

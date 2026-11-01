@@ -24,7 +24,7 @@
 ## M3：优先扩展
 
 - [x] 多 TIFF 显式独立发布意图、已知 Mosaic/Pyramid 标记阻断与冻结来源
-- [ ] 本次多 TIFF 改动的 Windows 原生增量验收
+- [x] 本次多 TIFF 改动的 Windows 原生增量验收与双平台 CI（见 Windows 报告第 8 节）
 - [ ] SFTP/共享目录的大文件传输
 - [ ] 已知 ImagePyramid 目录兼容
 - [ ] QML 无界面转换原型门槛

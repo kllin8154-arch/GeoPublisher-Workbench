@@ -1,4 +1,4 @@
-# 多 TIFF 导入意图：Linux 增量验证与 Windows 复验
+# 多 TIFF 导入意图：Linux、Windows 与 CI 增量验证
 
 日期：2026-11-01（Asia/Shanghai）。基线：PR #1 已合入的 `bb83e77`。本阶段仍为受控开发预览。
 
@@ -6,9 +6,9 @@
 
 新增本地导入检查、CLI/桌面明确选择、schema 2 来源记录及执行前复核。未修改 GDAL 环境隔离策略、REST 请求实现、远程写入顺序或配置清理算法。
 
-本记录只包含当前 Linux 环境直接执行的结果。Windows 原版 `310 passed, 4 skipped` 与 PR #1 的 `332 passed, 4 skipped` 继续保留在原报告，不能作为本阶段新增功能的 Windows 通过证据。本次没有启动 GeoServer，没有连接生产环境或数据库，没有执行 REST 写操作。
+本记录先保留 Linux 原始结果，再追加 `6dff92e` 的 Windows 原生验收与远程 CI。Windows 原版 `310 passed, 4 skipped` 与 PR #1 的 `332 passed, 4 skipped` 继续保留在原报告，不能作为本阶段新增功能的 Windows 通过证据。本次没有启动 GeoServer，没有连接生产环境或数据库，没有执行 REST 写操作。
 
-## 自动检查
+## Linux 自动检查
 
 | 检查 | 本次结果 |
 |---|---|
@@ -46,9 +46,19 @@
 
 最终 `results.json` 的 SHA256：`e566ea7bf51bc37cb5abad8accbe487fe182363c670241b734ef6b9c192ec3e1`。该 JSON 不包含凭据或现场数据。
 
+## Windows 原生与远程 CI 结果
+
+2026-11-01 已在用户 Windows 10 本机完成 PR #2 增量验收；最终代码提交为 `6dff92e`。全量 **409 passed, 5 skipped**，跳过项均为符号链接权限测试，原生 GDAL 用例实际执行（0.321 秒）。Ruff、sdist/wheel 与指定 uv 0.13.4 的离线锁检查通过。首次 Unix 绝对路径测试夹具问题在 `8b263f8` 修正；CI 默认编码与 Linux Qt 系统库问题在 `6dff92e` 修正，未改变发布业务逻辑。
+
+Qt 使用真实 `windows` 平台。未确认阻断、实际勾选、后台两资源计划、输入变化和已知结构阻断全部通过；28 次 GDAL 调用，0 Python socket 连接尝试、0 HTTP 客户端创建，源哈希不变。`restored_mode` 验证保存文件经 `load_plan()` 读取的结果，不表示烟测点击了完整桌面恢复流程。两张 1740×1245 原生截图已检查中文和控件；截图脚本等待原生绘制过渡后再捕获，并检查保存成功。
+
+[Actions #8](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109) 两平台均 **413 passed, 1 skipped**，唯一跳过项为未安装原生 GDAL；符号链接测试全部执行。Linux/Windows 的 Ruff、sdist/wheel、Windows PyInstaller 预览及产物上传全部通过。CI 预览仍不包含完整 GDAL/PROJ，原生运行时证据来自本机独立验证。最终 Linux 本地复验为 **414 passed**（3.63 秒），原生用例实际执行（0.334 秒）。
+
+Windows 最终证据、完整跳过清单、首次失败及修正过程见 [Windows 报告第 8 节](VALIDATION-WINDOWS-2026-11-01.md#8-pr-2-多-tiff-导入的-windows-增量验证)。Linux 最终 JUnit 的 SHA256 为 `57543330e0d89e2021a8f72e3763396f0201087f42544418603c3040443aec1e`。
+
 ## Windows 复验步骤
 
-在已准备的 Windows 项目虚拟环境和 Pixi 运行时中执行。先运行原有检查，并保存本次独立 JUnit；符号链接用例可能因权限跳过，需要记录实际项目及数量，不能预填 Linux 通过数。新增 marker 符号链接测试也可能跳过。原生 GDAL 用例仍必须实际执行。
+在已准备的 Windows 项目虚拟环境和 Pixi 运行时中执行。以下 `uv` 应使用已验证的 0.13.4 可执行文件；本次实际锁检查显式使用独立工具目录，测试与构建直接调用项目 `.venv`。先运行原有检查，并保存本次独立 JUnit；符号链接用例可能因权限跳过，需要记录实际项目及数量，不能预填 Linux 通过数。新增 marker 符号链接测试也可能跳过。原生 GDAL 用例仍必须实际执行。
 
 ```powershell
 $env:PYTHONUTF8 = '1'

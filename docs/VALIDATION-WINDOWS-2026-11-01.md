@@ -240,3 +240,114 @@ Remove-Item Env:QT_QPA_PLATFORM
 **PR #1 的 Windows 增量验证通过，可以合入主分支；第 5 节 P0 第 1 项“GDAL 子进程凭据继承”在该补丁中关闭。** 同时覆盖默认、自定义、大小写及白名单冲突引用；父进程凭据读取没有被破坏。
 
 完整离线包、多 TIFF 导入意图、WMS 内容验收、完整失败补偿、任务迁移和现场目录适配仍按 [后续验收门槛](RELEASE-GATES.md) 单独推进。远程 CI 资源限制未解除，本次通过依据是本机执行证据。
+
+## 8. PR #2 多 TIFF 导入的 Windows 增量验证
+
+本节追加于 2026-11-01（Asia/Shanghai）。第 1–7 节保留各自提交的历史结果；本节更新 PR #2 的 Windows 原生与远程 CI 状态。
+
+### 8.1 范围、提交与环境
+
+在 `main` 的 `bb83e77` 基线上验证 [PR #2](https://github.com/kllin8154-arch/GeoPublisher-Workbench/pull/2)：多 TIFF 明确独立发布意图、已知 Mosaic/Pyramid 结构阻断、冻结来源及执行前复核。最终被测提交为 **`6dff92ee630f3a611c71aee5661fb92fa43a17eb`**。
+
+| 项目 | 本次实际环境 |
+|---|---|
+| Windows | 10.0.19045 x64 |
+| Python | 项目 `.venv`，3.12.12 |
+| pytest / Ruff | 9.2.0 / 0.17.3 |
+| Qt | PySide6 Essentials 6.12.0；视觉烟测使用 `windows` 平台 |
+| GDAL | 原受控 Pixi 运行时 3.13.3，`Library/bin` 布局 |
+| uv | 独立下载并校验的官方 0.13.4，用其绝对路径执行离线锁检查 |
+| 验证分支 | `validation/pr-2-windows-20261101-153059` |
+| 数据 | 新生成的合成数据；原生烟测使用两份 TIFF 和合成结构标记 |
+
+测试、构建、临时目录和截图均写入 D 盘的仓库外验证目录。未启动 GeoServer，未连接生产环境或业务数据库，未读取真实地质数据，未执行发布或目录 SQL。原有真实 GeoServer 集成结果仍属于第 1–6 节的历史提交。
+
+### 8.2 本次发现与修正
+
+1. 首次 Windows 运行 `7e9c7ec` 得到 **1 failed, 408 passed, 5 skipped**。唯一失败为 CLI 导入意图测试：模拟 GDAL 的夹具使用 `/unused-synthetic-gdal`，Windows 将该路径规范化为带盘符的路径，触发夹具的路径相等断言。`8b263f8` 改为 `tmp_path` 下的平台原生绝对路径，保留原断言和业务检查；随后全量结果为 **409 passed, 5 skipped**。
+2. [Actions #7](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41285509365) 已进入真实执行。Ubuntu 在 Qt 导入时缺少 `libEGL.so.1`，收集阶段报错；Windows 为 **1 failed, 412 passed, 1 skipped**，中文示例 JSON 的测试读取采用系统默认 `cp1252` 而失败。`6dff92e` 在 Linux CI 安装 `libegl1`，并在该测试显式指定 UTF-8；没有用全局编码设置掩盖该问题。CI 增加 `-ra` 输出准确跳过原因。
+3. 原生 Qt 立即截图时，逻辑勾选已为真、后台计划也正确，但图像尚未显示勾选。单独对比立即捕获与等待 300 毫秒后的捕获，后者显示正常。`6dff92e` 让验收脚本等待绘制过渡、检查 PNG 保存结果，并记录 `selection_checked`；复选框业务逻辑保持原样。
+
+最终在 `6dff92e` 重新执行本机全量检查及原生烟测，结果如下。首次失败和中间成功证据保留在独立目录，没有被最终输出覆盖。
+
+### 8.3 全量检查与指定工具版本
+
+| 检查 | 最终结果 |
+|---|---|
+| pytest | **409 passed, 5 skipped**；414 项收集，8.75 秒 |
+| 原生 GDAL pytest | 实际执行，0.321 秒；JUnit 无 skipped/failure/error 子节点 |
+| Ruff | 通过 |
+| sdist / wheel | 均构建成功；产物位于本次独立验证目录 |
+| uv 0.13.4 离线锁检查 | `uv lock --check --offline` 成功，解析 32 个包，依赖锁未改变 |
+| 被测内容 | 检查前后均为 `6dff92e`，`src`、`tests`、`scripts` 无未提交差异 |
+
+五个跳过项全部来自本机会话创建符号链接的权限限制：
+
+| 测试 | 项数 | 原因 |
+|---|---:|---|
+| `test_symlink_output_is_rejected` | 1 | Symlinks unavailable |
+| `test_build_does_not_resolve_away_explicit_source_symlink[file/parent]` | 2 | The test filesystem does not permit symlinks. |
+| `test_symlink_sources_rejected_and_directory_links_not_followed` | 1 | Symlink creation unavailable |
+| `test_marker_symlink_does_not_hide_a_structure` | 1 | Symbolic links require privileges on this platform |
+
+本次显式下载 [uv 0.13.4 官方 Windows 产物](https://github.com/astral-sh/uv/releases/tag/0.13.4) `uv-x86_64-pc-windows-msvc.zip`。SHA256 为 `ccec7508a07d9933d7cb1261880633efcf1f30d6e6eddab21823f1dae6f23225`，与官方 release 资产摘要相符；`gh attestation verify --repo astral-sh/uv` 成功，保存了验证 JSON。解压后的版本为 `uv 0.13.4 (7456b60bc 2026-10-20 x86_64-pc-windows-msvc)`。
+
+系统 PATH 中另有 uv 0.10.6；锁检查使用上述 0.13.4 的完整路径。全量测试与构建直接调用项目现有 `.venv/Scripts/python.exe`，没有重新同步或替换开发环境。
+
+### 8.4 真实 GDAL 与 Windows 桌面
+
+执行仓库 `scripts/validate_raster_imports.py --desktop`，显式设置 `QT_QPA_PLATFORM=windows`。外部监督进程设有 300 秒上限，实际正常结束，用时 3.156 秒。结果中的 `synthetic_only` 为真。
+
+| 场景 | 结果 |
+|---|---|
+| 两 TIFF 未确认分别发布 | 在 GDAL 调用与任务创建前阻断 |
+| 明确选择 `independent` | ready，2 个资源，均为 EPSG:4326 |
+| 计划保存后读取 | `load_plan()` 恢复的方式为 independent，资源数量固定为 2 |
+| 输入目录新增 TIFF | 执行前阻断，未构造 HTTP 客户端 |
+| 输入父目录新增 Pyramid 标记 | 执行前阻断，未构造 HTTP 客户端 |
+| 显式选择 Pyramid 子 TIFF 或 Mosaic 索引 SHP | 阻断，明确独立模式不能覆盖结构检查 |
+| 原生桌面实际点击 | 默认未勾选时阻断；勾选后真实后台生成两资源计划 |
+| 桌面更改输入 | 清除确认与旧计划，执行按钮不可用 |
+| 中文与勾选截图 | 选择页与检查页均已查看，中文可读、控件完整、勾选可见 |
+
+共 **28 次原生 GDAL 调用**：样本生成 12 次、核心两资源预检 8 次、桌面后台两资源预检 8 次。源 TIFF 哈希前后一致。Python socket 连接尝试 **0**，HTTP 客户端创建尝试 **0**，`publication_clicked=false`。
+
+网络计数来自对 Python `socket.connect/connect_ex` 的拦截，不是整机网络抓包。GDAL 继续使用原有最小子环境及 `PROJ_NETWORK=OFF`。`restored_mode` 检查的是计划文件读取，没有在此次烟测中点击完整桌面恢复流程；完整恢复表单行为另有桌面单元测试。本节不替代完整交互、可访问性或服务端发布验收。
+
+### 8.5 远程 CI 已取得执行证据
+
+[Actions #8](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109) 验证 `6dff92e` 合入 `bb83e77` 的合并预览 `56bb2ea`，两个 job 均为 `success`：
+
+| 项目 | Windows runner | Ubuntu 24.04 runner |
+|---|---|---|
+| Python | 3.12.10 | 3.12.15 |
+| pytest | **413 passed, 1 skipped**，16.47 秒 | **413 passed, 1 skipped**，3.70 秒 |
+| Ruff / sdist / wheel | 全部成功 | 全部成功 |
+| Windows PyInstaller 桌面预览 | 构建成功 | 按平台条件跳过 |
+| 产物上传 | 成功 | 成功 |
+
+两平台唯一跳过均明确记录为 `Native locked GDAL runtime is not installed on this platform`，符号链接测试全部执行。CI 与本机互补：本机运行真实受控 GDAL，CI 执行本机因权限跳过的符号链接测试；不能把 CI 的跳过项计为原生 GDAL 已通过。
+
+已上传 [Windows 预览](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109/artifacts/13075726444) 和 [Linux Python 构建产物](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109/artifacts/13074872071)，保留期 14 天。Windows ZIP 为 55,405,082 字节，摘要 `289bc460b0711e02d4fb265ea605c6d84473804ed5266f2dbda08d7028ce4154`；Linux ZIP 为 455,858 字节，摘要 `36c7f81efa08fcc189c79b8e099a95a7bd1bdcc94d947220d72ec246901ed9e3`。摘要来自 GitHub 产物元数据及上传日志，本次未下载或执行这些 CI 产物。Windows 预览仍不包含完整 GDAL/PROJ。
+
+### 8.6 本机证据与验收结论
+
+证据根目录为 `D:\Java-p\GeoPublisher-Workbench-validation`，均在源码仓库之外：
+
+- `pr2-windows-20261101-remote`：首次失败的全量测试、JUnit 与构建输出。
+- `pr2-windows-20261101-verified`：`8b263f8` 成功记录、uv 锁检查及截图捕获时机诊断。
+- `pr2-windows-20261101-final`：`6dff92e` 最终全量测试、原生监督脚本、结果 JSON、两张原生截图、合成输入与构建输出。
+- `pr2-tools-uv-0.13.4`：官方压缩包、解压运行时与 attestation 验证记录。
+
+最终证据摘要：
+
+| 文件（相对 final 目录） | SHA256 |
+|---|---|
+| `pytest.xml` | `4eea61c29ee558bd972c8cd50ecd0d627336f843507fff17e189c41f64af7fce` |
+| `native/results.json` | `bcd22e7742de0ff4b8ba214c43a7130e9cde7e665463157426b34581c2ea508d` |
+| `native/desktop-selection.png` | `d5915eab1d48f987bd29cdec63611ad769085a62205c0e4c7807f54591c030c4` |
+| `native/desktop-review.png` | `7f93cc36db1926d455ed814569f4506dea910d383fa6fd97725276680eeae4e0` |
+
+两张 PNG 均可正常解码，尺寸为 1740×1245。复验命令与输入范围见 [多 TIFF 验证说明](VALIDATION-RASTER-IMPORTS-2026-11-01.md#windows-复验步骤)，每次应使用新的输出目录并核对原生用例没有被跳过。
+
+**PR #2 的 Windows 原生增量门槛与双平台 CI 门槛均已满足，可进入代码审查。** 本结论只覆盖已知结构标记阻断与明确独立发布意图；无标记 Mosaic/Pyramid 的完整识别、服务发布引擎、完整 GDAL/PROJ 离线发行物、WMS 内容验收、失败补偿、任务迁移和现场目录适配继续单独验收。产品定位仍为受控开发预览。

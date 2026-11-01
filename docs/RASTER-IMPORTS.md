@@ -59,4 +59,4 @@ uv run --frozen --no-sync geopub plan D:/GIS-Samples/independent --environment d
 4. 已知 Pyramid 目录、其子层 TIFF、Mosaic 索引 SHP 及损坏保留标记均被阻断；`independent` 不改变结果。
 5. 计划生成后增加 TIFF 或结构标记，执行在网络连接前停止。无需接入生产服务或业务数据库。
 
-本阶段的测试记录见 [多 TIFF 增量验证](VALIDATION-RASTER-IMPORTS-2026-11-01.md)。Windows 原生结果需要单独记录，不能把 Linux 的通过数当作 Windows 通过数。
+以上范围已在 Windows 原生环境完成：`409 passed, 5 skipped`，5 项均为符号链接权限跳过，原生 GDAL 用例实际执行；桌面确认、中文显示与后台两资源计划通过。Linux 和远程 CI 结果分别记录于 [多 TIFF 增量验证](VALIDATION-RASTER-IMPORTS-2026-11-01.md)，Windows 提交、跳过清单与证据摘要见 [报告第 8 节](VALIDATION-WINDOWS-2026-11-01.md#8-pr-2-多-tiff-导入的-windows-增量验证)。

@@ -130,7 +130,7 @@ uv run --frozen --no-sync python scripts/integration_check.py --environment data
 
 此脚本会创建测试工作空间及服务对象，验证发布、重复执行、清理和上传响应丢失。响应丢失场景会保留未自动认领的测试存储，符合实际保护逻辑；测试结束后销毁整个一次性测试服务即可。不要指向承担业务的 GeoServer。
 
-GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows PyInstaller 桌面预览。**预览产物不包含受控 GDAL，不是完整离线包。** 平台执行证据与已知限制见 [验证记录](docs/VALIDATION.md)。
+GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows PyInstaller 桌面预览。**CI 预览产物不包含受控 GDAL，不是完整离线包。** 在本机 D 盘另行完成了带 GDAL 3.13.3/PROJ 的 Windows 内部便携预览、原生 Qt 启动和桌面快捷方式验证，详见 [Windows 便携版安装与验证](docs/WINDOWS-PORTABLE.md)。该本地包仍待干净断网目标机及许可证/签名验收，不应当作正式发布版。平台执行证据与已知限制见 [验证记录](docs/VALIDATION.md)。
 
 ## 代码结构
 

@@ -51,6 +51,13 @@ def check_desktop(environment: Environment, inputs: Path, output: Path, font: Pa
     app.processEvents()
     warnings = []
 
+    def capture_desktop(name: str) -> None:
+        # Let native style transitions finish before recording visual evidence.
+        QTest.qWait(300)
+        snapshot = window.grab()
+        if snapshot.isNull() or not snapshot.save(str(output / name), "PNG"):
+            raise RuntimeError(f"Could not save desktop evidence: {name}")
+
     def wait_for_worker() -> None:
         deadline = time.monotonic() + 180
         while window._thread is not None and time.monotonic() < deadline:
@@ -74,7 +81,8 @@ def check_desktop(environment: Environment, inputs: Path, output: Path, font: Pa
                 pos=QPoint(8, window.independent_tiffs.height() // 2),
             )
             assert window.independent_tiffs.isChecked()
-            window.grab().save(str(output / "desktop-selection.png"))
+            capture_desktop("desktop-selection.png")
+            assert window.independent_tiffs.isChecked()
             QTest.mouseClick(window.inspect_button, Qt.MouseButton.LeftButton)
             wait_for_worker()
             assert not warnings, warnings
@@ -83,7 +91,7 @@ def check_desktop(environment: Environment, inputs: Path, output: Path, font: Pa
             assert plan["import_intent"]["raster_mode"] == "independent"
             assert window.execute_button.isEnabled()
             assert "2 个 TIFF 分别发布为 2 个独立图层" in window.plan_summary.text()
-            window.grab().save(str(output / "desktop-review.png"))
+            capture_desktop("desktop-review.png")
             extra = output / "额外影像.tif"
             shutil.copyfile(inputs / "east.tif", extra)
             window.add_sources([str(extra)])
@@ -102,6 +110,7 @@ def check_desktop(environment: Environment, inputs: Path, output: Path, font: Pa
     return {
         "platform": app.platformName(),
         "unchecked_blocked": True,
+        "selection_checked": True,
         "background_ready": True,
         "resource_count": 2,
         "restored_mode": load_plan(Path(plan["output_dir"]) / "plan.json")["import_intent"]["raster_mode"],

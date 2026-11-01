@@ -843,3 +843,29 @@ def test_wms_legitimate_uniform_color_requires_review_even_after_zoom(tmp_path):
         sample["evidence"]["reasons"] == ["UNIFORM_IMAGE"]
         for sample in report["resources"][0]["wms"]["samples"]
     )
+
+
+def test_wms_cancelled_after_primary_keeps_validated_preview(tmp_path):
+    from geopublisher.engine import Cancelled, review_wms_views
+    from geopublisher.verification import verify_image
+
+    class BlankMap(StatefulGeoServer):
+        def get_map(self, workspace, layer, *, bbox, crs, version, width, height):
+            self.map_calls += 1
+            return _synthetic_empty_map(width, height)
+
+    server = BlankMap()
+    preview = tmp_path / "initial-map.png"
+
+    def cancel():
+        raise Cancelled("Test interruption at safe checkpoint.")
+
+    with pytest.raises(Cancelled):
+        review_wms_views(
+            server, "maps", "layer_0", [100, 20, 101, 21],
+            checkpoint=cancel, on_preview=preview.write_bytes,
+        )
+    assert server.map_calls == 1
+    assert preview.is_file()
+    result = verify_image(preview.read_bytes(), "image/png", expected_size=(512, 512))
+    assert result["status"] == "REVIEW_REQUIRED"

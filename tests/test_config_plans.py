@@ -574,3 +574,27 @@ def test_cli_explicit_intent_is_required_and_included_in_review_output(inputs, c
     summary = json.loads(capsys.readouterr().out)
     assert summary["raster_mode"] == "independent"
     assert summary["raster_count"] == len(summary["resources"]) == 2
+
+
+def test_plan_uses_gdal_alpha_metadata_for_default_raster_style(inputs, monkeypatch):
+    original_inspect = inputs.runtime.inspect
+
+    def rgba_inspection(self, path, *, encoding=None, declared_crs=None):
+        result = original_inspect(self, path, encoding=encoding, declared_crs=declared_crs)
+        result["band_count"] = 4
+        result["raster"] = {
+            "bands": [
+                {"band": 1, "colorInterpretation": "Red"},
+                {"band": 2, "colorInterpretation": "Green"},
+                {"band": 3, "colorInterpretation": "Blue"},
+                {"band": 4, "colorInterpretation": "Alpha"},
+            ]
+        }
+        return result
+
+    monkeypatch.setattr(inputs.runtime, "inspect", rgba_inspection)
+    plan = build_plan(inputs.environment, [inputs.source], inputs.output, task_id=TASK_ID)
+    assert plan["ready"]
+    style = Path(plan["resources"][0]["style"]["path"]).read_text(encoding="utf-8")
+    assert "RasterSymbolizer" in style
+    assert "ChannelSelection" not in style

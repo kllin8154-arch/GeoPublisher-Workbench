@@ -158,7 +158,8 @@ def _css(parent: ET.Element, name: str, value: str) -> None:
 
 
 def write_default_sld(
-    path: Path, *, name: str, geometry_type: str | None = None, band_count: int | None = None
+    path: Path, *, name: str, geometry_type: str | None = None,
+    band_count: int | None = None, alpha_band: int | None = None
 ) -> Path:
     """Create a minimal SLD; never replace a different existing style."""
     if not name or any(ord(char) < 32 for char in name):
@@ -175,9 +176,12 @@ def write_default_sld(
             raise StyleError("NO_RASTER_BANDS", "无法为无波段影像生成默认样式。")
         raster = _element(rule, "RasterSymbolizer")
         _element(raster, "Opacity", "1.0")
-        # Empty ChannelSelection for one/two bands allows native palettes and
-        # gray rendering. RGB defaults are explicit for multi-band imagery.
-        if band_count >= 3:
+        # ChannelSelection of RGB only strips the fourth native Alpha band on
+        # GeoServer 2.24.4. Let native RGBA rendering retain its transparency.
+        # Other multi-band images continue using explicit RGB channels.
+        if alpha_band is not None and not 1 <= alpha_band <= band_count:
+            raise StyleError("INVALID_ALPHA_BAND", "Alpha 波段编号与影像波段数量不一致。")
+        if band_count >= 3 and not (band_count == 4 and alpha_band == 4):
             channels = _element(raster, "ChannelSelection")
             for color, band in (("RedChannel", 1), ("GreenChannel", 2), ("BlueChannel", 3)):
                 channel = _element(channels, color)

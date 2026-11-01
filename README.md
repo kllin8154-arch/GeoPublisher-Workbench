@@ -2,13 +2,15 @@
 
 面向实施人员的 GeoServer 自动发布工作台。Python 核心同时驱动 CLI 和中文 PySide6 桌面界面：本地预检 → 冻结发布计划 → REST 发布 → WMS 实图验收 → 任务报告与目录绑定清单。
 
+**第一次使用？先看 [三步上手指南](docs/QUICKSTART-ZH.md)**：环境设置和只读连接检查 → 拖入 SHP/TIFF 并本地预检 → 确认发布、查看地图与报告。日常只显示常用选项，编码、CRS、SLD 和凭据变量等高级设置按需展开。
+
 **当前版本：0.1.0 开发预览。** 已在 Windows 10 和 Linux 的隔离环境中，使用 GeoServer 2.24.4、GDAL 3.13.3 与合成数据完成核心发布、重复执行、配置清理及上传响应丢失验证。Windows 原生桌面启动与字体烟测、受控 GDAL 已取得本地证据；完整 Windows/Linux 离线发行物与现场环境仍需验收，当前构建不等于可直接交付内网的离线安装包。详见 [验证汇总](docs/VALIDATION.md) 和 [Windows 本地验证报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。
 
 PR #1 的凭据隔离补丁已通过 Windows 增量验证（`332 passed, 4 skipped`）：原生 GDAL 用例实际执行，中文路径预检和桌面后台生成计划通过，GDAL 子进程不再继承默认或档案自定义的发布凭据，父进程凭据读取正常。原版 `310 passed, 4 skipped` 的证据仍单独保留，详见 [补丁验证记录](docs/VALIDATION-WINDOWS-2026-11-01.md#7-pr-1-凭据隔离补丁的-windows-增量验证)。
 
 PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增量验收：`409 passed, 5 skipped`，跳过项均为符号链接权限测试；原生 GDAL、中文及空格路径、桌面勾选确认和后台计划通过。Linux 本地 `414 passed`；[Actions #8](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109) 两平台均 `413 passed, 1 skipped`，唯一跳过为 CI 未安装的原生 GDAL，构建与产物上传成功。详见 [本次验证](docs/VALIDATION-WINDOWS-2026-11-01.md#8-pr-2-多-tiff-导入的-windows-增量验证)。Windows 桌面预览仍不包含完整 GDAL/PROJ 离线运行时。
 
-![实际桌面运行结果](docs/images/desktop-preview.png)
+![Windows 原生三步向导：数据选择](docs/images/guided-import.png)
 
 ## 已实现
 

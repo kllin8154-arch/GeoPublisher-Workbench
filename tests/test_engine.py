@@ -713,3 +713,133 @@ def test_cleanup_preflight_rejection_reports_uncleared_objects_without_deleting(
 
     with Journal(journal_path(plan)) as audit:
         assert audit.get_task(plan["task_id"])["status"] == "MANUAL_ACTION_REQUIRED"
+
+
+def _synthetic_empty_map(width: int, height: int) -> MapResponse:
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    stream = io.BytesIO()
+    image.save(stream, "PNG")
+    return MapResponse(200, {"content-type": "image/png"}, stream.getvalue())
+
+
+def test_wms_full_extent_success_does_not_issue_extra_requests(tmp_path):
+    plan, server = make_plan(tmp_path), StatefulGeoServer()
+    report = run_plan(plan, client=server)
+    assert report["status"] == "SUCCEEDED"
+    wms = report["resources"][0]["wms"]
+    assert server.map_calls == 1
+    assert wms["selected_sample"] == 0
+    assert len(wms["samples"]) == 1
+    assert wms["samples"][0]["bbox"] == wms["bbox"]
+
+
+def test_wms_empty_full_extent_can_use_a_visible_zoomed_window(tmp_path):
+    class SparseAtFullExtent(StatefulGeoServer):
+        def get_map(self, workspace, layer, *, bbox, crs, version, width, height):
+            if self.map_calls == 0:
+                self.map_calls += 1
+                return _synthetic_empty_map(width, height)
+            return super().get_map(
+                workspace, layer, bbox=bbox, crs=crs, version=version, width=width, height=height
+            )
+
+    plan, server = make_plan(tmp_path), SparseAtFullExtent()
+    report = run_plan(plan, client=server)
+    assert report["status"] == "SUCCEEDED"
+    result = report["resources"][0]
+    wms = result["wms"]
+    assert server.map_calls == 2
+    assert wms["selected_sample"] == 1
+    assert len(wms["samples"]) == 2
+    assert wms["samples"][0]["evidence"]["status"] == "REVIEW_REQUIRED"
+    assert wms["samples"][1]["evidence"]["status"] == "PASSED"
+    assert wms["bbox"] == wms["samples"][1]["bbox"]
+    assert wms["samples"][0]["bbox"] != wms["samples"][1]["bbox"]
+    assert digest_file(result["preview_path"]) == wms["evidence"]["sha256"]
+    assert wms["crs"] == "EPSG:4326" and wms["version"] == "1.1.1"
+
+
+def test_wms_all_empty_windows_stay_review_required(tmp_path):
+    class AllTransparent(StatefulGeoServer):
+        def get_map(self, workspace, layer, *, bbox, crs, version, width, height):
+            self.map_calls += 1
+            return _synthetic_empty_map(width, height)
+
+    plan, server = make_plan(tmp_path), AllTransparent()
+    report = run_plan(plan, client=server)
+    assert report["status"] == "REVIEW_REQUIRED"
+    wms = report["resources"][0]["wms"]
+    assert server.map_calls == 5
+    assert wms["selected_sample"] == 0
+    assert len(wms["samples"]) == 5
+    assert all(s["evidence"]["status"] == "REVIEW_REQUIRED" for s in wms["samples"])
+    assert all(s["evidence"]["reasons"] == ["FULLY_TRANSPARENT"] for s in wms["samples"])
+    assert wms["bbox"] == wms["samples"][0]["bbox"]
+
+
+def test_wms_secondary_error_does_not_override_primary_review_with_false_success(tmp_path):
+    class ErrorOnZoom(StatefulGeoServer):
+        def get_map(self, workspace, layer, *, bbox, crs, version, width, height):
+            self.map_calls += 1
+            if self.map_calls == 1:
+                return _synthetic_empty_map(width, height)
+            raise GeoServerError("INJECTED_WMS_READ", "Synthetic secondary read error.")
+
+    plan, server = make_plan(tmp_path), ErrorOnZoom()
+    report = run_plan(plan, client=server)
+    assert report["status"] == "REVIEW_REQUIRED"
+    wms = report["resources"][0]["wms"]
+    assert server.map_calls == 2
+    assert wms["selected_sample"] == 0
+    assert len(wms["samples"]) == 2
+    assert wms["samples"][1]["status"] == "REVIEW_REQUIRED"
+    assert wms["samples"][1]["code"] == "INJECTED_WMS_READ"
+    assert "Synthetic secondary read error" not in json.dumps(report)
+
+
+def test_wms_zoom_candidate_boxes_are_bounded_and_deterministic():
+    from geopublisher.engine import _wms_review_bboxes
+
+    actual = [100.0, 20.0, 101.0, 21.0]
+    boxes = _wms_review_bboxes(actual)
+    assert len(boxes) == 4
+    assert boxes == _wms_review_bboxes(actual)
+    assert len({tuple(bbox) for bbox in boxes}) == 4
+    assert all(99 < x0 < x1 < 102 and 19 < y0 < y1 < 22 for x0, y0, x1, y1 in boxes)
+    assert all((x1 - x0) < 0.6 and (y1 - y0) < 0.6 for x0, y0, x1, y1 in boxes)
+
+
+def test_wms_xml_primary_failure_never_falls_back_to_zoomed_windows(tmp_path):
+    class XmlFailure(StatefulGeoServer):
+        def get_map(self, workspace, layer, *, bbox, crs, version, width, height):
+            self.map_calls += 1
+            return MapResponse(
+                200,
+                {"content-type": "image/png"},
+                b"<ServiceExceptionReport>wrong layer</ServiceExceptionReport>",
+            )
+
+    plan, server = make_plan(tmp_path), XmlFailure()
+    report = run_plan(plan, client=server)
+    assert report["status"] == "FAILED"
+    assert report["resources"][0]["code"] == "WMS_EXCEPTION"
+    assert server.map_calls == 1
+
+
+def test_wms_legitimate_uniform_color_requires_review_even_after_zoom(tmp_path):
+    class SolidRaster(StatefulGeoServer):
+        def get_map(self, workspace, layer, *, bbox, crs, version, width, height):
+            self.map_calls += 1
+            image = Image.new("RGB", (width, height), (14, 98, 190))
+            output = io.BytesIO()
+            image.save(output, "PNG")
+            return MapResponse(200, {"content-type": "image/png"}, output.getvalue())
+
+    plan, server = make_plan(tmp_path, kinds=["geotiff"]), SolidRaster()
+    report = run_plan(plan, client=server)
+    assert report["status"] == "REVIEW_REQUIRED"
+    assert server.map_calls == 5
+    assert all(
+        sample["evidence"]["reasons"] == ["UNIFORM_IMAGE"]
+        for sample in report["resources"][0]["wms"]["samples"]
+    )

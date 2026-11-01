@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -20,7 +21,9 @@ from PySide6.QtGui import QColor, QImage  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
+from geopublisher import desktop  # noqa: E402
 from geopublisher.config import Environment  # noqa: E402
+from geopublisher.datasets import DatasetError  # noqa: E402
 from geopublisher.desktop import MainWindow  # noqa: E402
 
 
@@ -71,11 +74,30 @@ def sample_plan(window, *, ready=True):
     }
 
 
+def two_raster_plan(window, *, confirmed=True):
+    plan = sample_plan(window)
+    second = copy.deepcopy(plan["resources"][0])
+    second.update(resource_id="r0002", target_name="another_sample")
+    plan["resources"].append(second)
+    if confirmed:
+        plan["schema_version"] = 2
+        plan["import_intent"] = {
+            "schema_version": 1,
+            "raster_mode": "independent",
+            "raster_count": 2,
+            "resource_count": 2,
+            "selections": [],
+            "datasets": [],
+        }
+    return plan
+
+
 def test_startup_does_not_create_working_files_or_scan_sources(window):
     assert not window._work_dir.exists()
     assert window.sources.count() == 0
     assert window.steps.currentIndex() == 0
     assert not window.execute_button.isEnabled()
+    assert not window.independent_tiffs.isChecked()
 
 
 def test_profile_export_never_contains_session_credentials(window, tmp_path):
@@ -92,13 +114,126 @@ def test_profile_export_never_contains_session_credentials(window, tmp_path):
     assert Environment.load(target).environment_key == "local-test"
 
 
-def test_multiple_independent_tiffs_are_accepted_and_duplicates_ignored(window, tmp_path):
+def test_multiple_tiffs_can_be_selected_without_implicitly_confirming_publication(window, tmp_path):
     files = [tmp_path / "a.tif", tmp_path / "b.tiff", tmp_path / "c.qml"]
     for path in files:
         path.write_bytes(b"fixture")
     window.add_sources([str(files[0]), str(files[1]), str(files[0]), str(files[2])])
     assert window.sources.count() == 2
     assert not window.execute_button.isEnabled()
+    assert not window.independent_tiffs.isChecked()
+
+
+@pytest.mark.parametrize("change", ["add", "clear", "edit"])
+def test_source_change_clears_raster_confirmation_and_reviewed_plan(window, tmp_path, change):
+    source = tmp_path / "a.tif"
+    source.write_bytes(b"fixture")
+    window.add_sources([str(source)])
+    window.independent_tiffs.setChecked(True)
+    window.review_plan(two_raster_plan(window))
+    assert window.execute_button.isEnabled()
+    if change == "add":
+        another = tmp_path / "b.tif"
+        another.write_bytes(b"fixture")
+        window.add_sources([str(another)])
+    elif change == "clear":
+        window._clear_sources()
+    else:
+        window.sources.item(0).setText(str(tmp_path / "changed.tif"))
+    assert not window.independent_tiffs.isChecked()
+    assert window._plan is None
+    assert not window.execute_button.isEnabled()
+
+
+def test_duplicate_source_does_not_clear_an_unchanged_confirmation(window, tmp_path):
+    source = tmp_path / "a.tif"
+    source.write_bytes(b"fixture")
+    window.add_sources([str(source)])
+    window.independent_tiffs.setChecked(True)
+    plan = two_raster_plan(window)
+    window.review_plan(plan)
+    window.add_sources([str(source)])
+    assert window.independent_tiffs.isChecked()
+    assert window._plan is plan
+
+
+def test_changing_raster_mode_invalidates_reviewed_plan(window):
+    window.independent_tiffs.setChecked(True)
+    window.review_plan(two_raster_plan(window))
+    window.independent_tiffs.setChecked(False)
+    assert window._plan is None
+    assert not window.execute_button.isEnabled()
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_background_plan_uses_only_explicit_raster_choice(window, tmp_path, app, monkeypatch, confirmed):
+    files = [tmp_path / "a.tif", tmp_path / "b.tif"]
+    for path in files:
+        path.write_bytes(b"fixture")
+    window.add_sources([str(path) for path in files])
+    window.independent_tiffs.setChecked(confirmed)
+    main_thread = threading.get_ident()
+    recorded, warnings = {}, []
+    result_plan = two_raster_plan(window)
+
+    def build_plan(environment, sources, output, **options):
+        assert threading.get_ident() != main_thread
+        recorded.update(sources=sources, options=options)
+        if options["raster_mode"] is None:
+            raise DatasetError("RASTER_INTENT_REQUIRED", "发现 2 个 TIFF，请确认分别发布。")
+        return result_plan
+
+    monkeypatch.setattr(desktop, "build_plan", build_plan)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    window._start_plan()
+    wait_until(app, lambda: window._thread is None)
+    assert recorded["sources"] == files
+    assert recorded["options"]["raster_mode"] == ("independent" if confirmed else None)
+    assert window.execute_button.isEnabled() is confirmed
+    if confirmed:
+        assert "2 个 TIFF 分别发布为 2 个独立图层" in window.plan_summary.text()
+        assert not warnings
+    else:
+        assert window._plan is None
+        assert "RASTER_INTENT_REQUIRED" in warnings[0]
+
+
+def test_restored_raster_intent_is_visible_and_not_overridden_by_form_defaults(window, monkeypatch):
+    plan = two_raster_plan(window)
+    original = copy.deepcopy(plan)
+    messages = []
+    monkeypatch.setattr(desktop, "load_plan", lambda _: plan)
+
+    def decline(*args):
+        messages.append(args[2])
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", decline)
+    window.restore_plan("synthetic-plan.json")
+    assert not window.independent_tiffs.isChecked()
+    assert window._plan is plan
+    assert "2 个 TIFF 分别发布为 2 个独立图层" in window.plan_summary.text()
+    window._confirm_run()
+    assert "2 个 TIFF 分别发布为 2 个独立图层" in messages[0]
+    assert plan == original
+    assert window._thread is None
+
+
+def test_legacy_multiple_raster_plan_cannot_run_without_recorded_intent(window, monkeypatch):
+    plan = two_raster_plan(window, confirmed=False)
+    original = copy.deepcopy(plan)
+    window.review_plan(plan)
+    assert "旧计划未记录" in window.plan_summary.text()
+    assert "重新选择数据并生成计划" in window.activity.text()
+    assert not window.execute_button.isEnabled()
+    window._set_busy(False)
+    assert not window.execute_button.isEnabled()
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args: pytest.fail("Unconfirmed legacy plan asked to run.")
+    )
+    window._confirm_run()
+    assert plan == original
+    assert window._thread is None
 
 
 def test_blocked_plan_cannot_be_executed(window, monkeypatch):
@@ -126,7 +261,7 @@ def test_worker_keeps_event_loop_responsive_and_ready_plan_appears_after_complet
     ticks = []
 
     def operation(_):
-        assert gate.wait(3)
+        assert gate.wait(10)
         return plan
 
     window._start_worker(operation, window.review_plan)
@@ -135,6 +270,7 @@ def test_worker_keeps_event_loop_responsive_and_ready_plan_appears_after_complet
         wait_until(app, lambda: bool(ticks))
         assert window._thread is not None
         assert not window.inspect_button.isEnabled()
+        assert not window.independent_tiffs.isEnabled()
     finally:
         gate.set()
         wait_until(app, lambda: window._thread is None)

@@ -60,10 +60,11 @@ def inputs(tmp_path, monkeypatch):
     source = source_directory / "synthetic.tif"
     source.write_bytes(b"Synthetic raster payload; GDAL inspection is a test substitute.")
     calls = {"probe": 0, "inspect": []}
+    gdal_bin = str((tmp_path / "gdal-runtime").resolve())
 
     class SyntheticGdal:
         def __init__(self, bin_dir, *, expected_version=None, credential_env_names=()):
-            assert bin_dir == "/unused-synthetic-gdal"
+            assert bin_dir == gdal_bin
             assert expected_version == "3.13.3"
 
         def probe(self):
@@ -91,7 +92,7 @@ def inputs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(datasets, "GdalRuntime", SyntheticGdal)
     return SimpleNamespace(
-        environment=Environment(**profile()),
+        environment=Environment(**profile(gdal_bin=gdal_bin)),
         source=source,
         output=tmp_path / "task",
         calls=calls,
@@ -215,7 +216,7 @@ def test_load_plan_rejects_non_object_json_with_structured_error(tmp_path, value
         (("schema_version",), True),
         (("schema_version",), 1.0),
         (("schema_version",), "1"),
-        (("schema_version",), 2),
+        (("schema_version",), 3),
         (("task_id",), None),
         (("task_id",), "-" * 36),
         (("task_id",), TASK_ID.upper()),
@@ -422,3 +423,154 @@ def test_sld_growth_after_stat_is_still_bounded_and_rejected(inputs, tmp_path, m
     assert requested_sizes
     assert not (inputs.output / "r0001" / "style.sld").exists()
     assert not (inputs.output / "plan.json").exists()
+
+
+@pytest.mark.parametrize("selection", ["files", "directory"])
+def test_multiple_tiffs_need_intent_before_gdal_or_task_creation(inputs, selection):
+    second = inputs.source.with_name("second.tiff")
+    second.write_bytes(b"another synthetic raster")
+    sources = [inputs.source, second] if selection == "files" else [inputs.source.parent]
+    with pytest.raises(DatasetError) as caught:
+        build_plan(inputs.environment, sources, inputs.output)
+    assert caught.value.code == "RASTER_INTENT_REQUIRED"
+    assert inputs.calls == {"probe": 0, "inspect": []}
+    assert not inputs.output.exists()
+
+
+def test_independent_choice_and_deduplicated_origins_survive_plan_restore(inputs):
+    second = inputs.source.with_name("second.tiff")
+    second.write_bytes(b"another synthetic raster")
+    result = build_plan(
+        inputs.environment,
+        [inputs.source.parent, inputs.source],
+        inputs.output,
+        raster_mode="independent",
+    )
+    restored = load_plan(inputs.output / "plan.json")
+    assert restored == result
+    assert restored["schema_version"] == 2
+    intent = restored["import_intent"]
+    assert intent["raster_mode"] == "independent"
+    assert intent["raster_count"] == intent["resource_count"] == len(restored["resources"]) == 2
+    source_entry = next(item for item in intent["datasets"] if item["path"] == str(inputs.source))
+    assert {origin["selection"] for origin in source_entry["origins"]} == {0, 1}
+    verify_artifacts(restored)
+
+
+def test_import_directory_cannot_contain_task_output(inputs):
+    output = inputs.source.parent / "tasks" / "new-task"
+    with pytest.raises(ConfigError) as caught:
+        build_plan(inputs.environment, [inputs.source.parent], output)
+    assert caught.value.code == "OUTPUT_INSIDE_SOURCE"
+    assert inputs.calls == {"probe": 0, "inspect": []}
+    assert not output.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "change", ["new-raster", "same-count-rename", "ancestor-marker", "mosaic-marker"]
+)
+def test_import_context_changes_block_execution_before_client_creation(inputs, monkeypatch, change):
+    from geopublisher.engine import run_plan
+
+    result = build_plan(
+        inputs.environment, [inputs.source.parent], inputs.output, raster_mode="independent"
+    )
+    original_targets = [r["target_name"] for r in result["resources"]]
+    if change == "new-raster":
+        inputs.source.with_name("another.tif").write_bytes(b"new synthetic raster")
+    elif change == "same-count-rename":
+        inputs.source.rename(inputs.source.with_name("renamed.tif"))
+    elif change == "ancestor-marker":
+        (inputs.source.parent / "pyramid.properties").write_text(
+            "Levels=1,1\nLevelsDirs=full preview\nLevelsNum=2\nGeneralBounds=0,0 1,1\n"
+        )
+    else:
+        (inputs.source.parent / "arbitrary.properties").write_text(
+            "Levels=1,1\nLocationAttribute=location\nLevelsNum=1\n"
+        )
+
+    def forbidden_client(*args, **kwargs):
+        pytest.fail("Import context must be rechecked before any client is created.")
+
+    monkeypatch.setattr(Environment, "client", forbidden_client)
+    with pytest.raises(ConfigError) as caught:
+        run_plan(result)
+    assert caught.value.code in {
+        "IMPORT_SELECTION_CHANGED", "UNSUPPORTED_PYRAMID", "UNSUPPORTED_MOSAIC"
+    }
+    assert [r["target_name"] for r in result["resources"]] == original_targets
+    assert not (inputs.output.parent / "geopublisher.sqlite").exists()
+
+
+@pytest.mark.parametrize("change", ["delete-intent", "wrong-count", "unconfirmed-mode", "wrong-source"])
+def test_new_plan_requires_consistent_import_intent_even_after_rehash(plan, change):
+    if change == "delete-intent":
+        del plan["import_intent"]
+    elif change == "wrong-count":
+        plan["import_intent"]["raster_count"] = True
+    elif change == "unconfirmed-mode":
+        plan["import_intent"]["raster_mode"] = None
+    else:
+        plan["resources"][0]["inspection"]["source"] = str(Path(plan["output_dir"]) / "another.tif")
+    seal(plan)
+    with pytest.raises(ConfigError) as caught:
+        validate_plan(plan)
+    assert caught.value.code == "INVALID_PLAN"
+
+
+def test_legacy_multi_raster_plan_remains_readable_but_cannot_start_network(inputs, monkeypatch):
+    from geopublisher.engine import run_plan
+
+    second = inputs.source.with_name("second.tiff")
+    second.write_bytes(b"second synthetic raster")
+    result = build_plan(
+        inputs.environment, [inputs.source.parent], inputs.output, raster_mode="independent"
+    )
+    result["schema_version"] = 1
+    del result["import_intent"]
+    seal(result)
+    restored = load_plan(write_plan(inputs.output / "legacy-plan.json", result))
+    assert restored == result
+
+    def forbidden_client(*args, **kwargs):
+        pytest.fail("Legacy multi-TIFF plans must not implicitly acquire independent consent.")
+
+    monkeypatch.setattr(Environment, "client", forbidden_client)
+    with pytest.raises(ConfigError) as caught:
+        run_plan(restored)
+    assert caught.value.code == "LEGACY_RASTER_INTENT_REQUIRED"
+    assert not (inputs.output.parent / "geopublisher.sqlite").exists()
+
+
+def test_legacy_single_raster_still_checks_current_structural_context(plan):
+    plan["schema_version"] = 1
+    del plan["import_intent"]
+    seal(plan)
+    validate_plan(plan)
+    verify_artifacts(plan)
+    (Path(plan["resources"][0]["inspection"]["source"]).parent / "indexer.properties").write_text(
+        "UseExistingSchema=true\nTypeName=tiles\nAbsolutePath=false\n"
+    )
+    with pytest.raises(ConfigError) as caught:
+        verify_artifacts(plan)
+    assert caught.value.code in {"UNSUPPORTED_MOSAIC", "RASTER_STRUCTURE_REVIEW_REQUIRED"}
+
+
+def test_cli_explicit_intent_is_required_and_included_in_review_output(inputs, capsys):
+    from geopublisher.cli import main
+
+    second = inputs.source.with_name("second.tiff")
+    second.write_bytes(b"second synthetic raster")
+    config = inputs.output.parent / "environment.json"
+    config.write_text(json.dumps(inputs.environment.to_dict()), encoding="utf-8")
+    args = [
+        "plan", str(inputs.source.parent), "--environment", str(config),
+        "--output", str(inputs.output),
+    ]
+    assert main(args) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "RASTER_INTENT_REQUIRED"
+    assert not inputs.output.exists()
+    assert main([*args, "--raster-mode", "independent"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["raster_mode"] == "independent"
+    assert summary["raster_count"] == len(summary["resources"]) == 2

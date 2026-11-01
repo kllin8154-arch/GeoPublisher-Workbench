@@ -6,13 +6,15 @@
 
 PR #1 的凭据隔离补丁已通过 Windows 增量验证（`332 passed, 4 skipped`）：原生 GDAL 用例实际执行，中文路径预检和桌面后台生成计划通过，GDAL 子进程不再继承默认或档案自定义的发布凭据，父进程凭据读取正常。原版 `310 passed, 4 skipped` 的证据仍单独保留，详见 [补丁验证记录](docs/VALIDATION-WINDOWS-2026-11-01.md#7-pr-1-凭据隔离补丁的-windows-增量验证)。
 
+PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增量验收：`409 passed, 5 skipped`，跳过项均为符号链接权限测试；原生 GDAL、中文及空格路径、桌面勾选确认和后台计划通过。Linux 本地 `414 passed`；[Actions #8](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109) 两平台均 `413 passed, 1 skipped`，唯一跳过为 CI 未安装的原生 GDAL，构建与产物上传成功。详见 [本次验证](docs/VALIDATION-WINDOWS-2026-11-01.md#8-pr-2-多-tiff-导入的-windows-增量验证)。Windows 桌面预览仍不包含完整 GDAL/PROJ 离线运行时。
+
 ![实际桌面运行结果](docs/images/desktop-preview.png)
 
 ## 已实现
 
 | 能力 | 当前行为 |
 |---|---|
-| 数据输入 | 单个或批量 SHP、独立 GeoTIFF；源文件保持不变 |
+| 数据输入 | 单个或批量 SHP、独立 GeoTIFF；多个 TIFF 需要明确确认分别发布，已知 Mosaic/Pyramid 结构及辅助索引阻断；源文件保持不变 |
 | 本地预检 | SHP 组件、编码、CRS、字段、范围；TIFF CRS、波段和外部依赖；首版发布要求可验证的 EPSG；明确指定受控 GDAL |
 | 样式 | 默认点/线/面/栅格 SLD，或最多 5 MiB 的已有 SLD；检查字段引用并拒绝外部资源 |
 | 发布策略 | 同名停止、明确跳过、任务固定名称的新版本；不提供原位替换 |
@@ -86,6 +88,8 @@ uv run --frozen --no-sync geopub status --journal data/runs/geopublisher.sqlite
 
 Windows 生成样本时将 `--gdal-bin` 改为 `.pixi/envs/default/Library/bin`。批处理可在人工审核后使用 `run ... --yes`；它表示明确授权计划中的写操作，不是忽略预检问题。
 
+多个 TIFF 需要明确增加 `plan ... --raster-mode independent`，或在桌面勾选“将所选 TIFF 分别发布为独立图层”。该选项不能绕过 Mosaic/Pyramid 结构标记。任务目录必须在所选输入目录之外；导入来源、方式和数量随新计划冻结，执行前变化会要求重新预检。检测边界、旧计划兼容与增量验收见 [多 TIFF 导入说明](docs/RASTER-IMPORTS.md)。
+
 成功任务产生 `report.json`、`report.md`、`catalog-bindings.json` 和实际 WMS PNG。WMS 验收成功与业务目录登记分别记录。`SKIPPED` 不表示本次源数据已生效，`REVIEW_REQUIRED` 需要检查图像，`MANUAL_ACTION_REQUIRED` 需要核对服务器和任务记录。
 
 ### 恢复与清理
@@ -133,6 +137,7 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
 | 模块 | 职责 |
 |---|---|
 | `config.py` / `plans.py` | 环境、输入类型、不可变计划、来源与产物摘要 |
+| `imports.py` | 本地结构标记、显式多 TIFF 意图、冻结来源与执行前复核 |
 | `datasets.py` / `styles.py` | 受控 GDAL、数据预检、打包与 SLD |
 | `geoserver.py` / `verification.py` | REST、WMS/WFS、图像验收 |
 | `journal.py` / `engine.py` | 写意图、锁、所有权、恢复与精确清理 |

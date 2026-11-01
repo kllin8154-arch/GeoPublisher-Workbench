@@ -55,9 +55,11 @@ def build_plan(
     sld: Path | str | None = None,
     target_name: str | None = None,
     enable_wfs: bool = False,
+    raster_mode: str | None = None,
     task_id: str | None = None,
 ) -> dict:
-    from .datasets import GdalRuntime, discover_sources, package_dataset
+    from .datasets import GdalRuntime, package_dataset
+    from .imports import prepare_imports, verify_import_intent
     from .styles import validate_sld, write_default_sld
 
     if strategy not in {"fail", "skip", "new-version"}:
@@ -75,17 +77,23 @@ def build_plan(
     output = Path(output_dir).resolve()
     if output.exists():
         raise ConfigError("PLAN_EXISTS", "任务目录已经存在；请使用新目录，或恢复现有任务。")
+    import_intent = prepare_imports(sources, raster_mode=raster_mode)
+    if any(
+        selection["kind"] == "directory" and output.is_relative_to(Path(selection["path"]))
+        for selection in import_intent["selections"]
+    ):
+        raise ConfigError(
+            "OUTPUT_INSIDE_SOURCE", "任务目录不能位于导入目录内；请选择独立的输出位置。"
+        )
+    paths = [Path(item["path"]) for item in import_intent["datasets"]]
+    if target_name and len(paths) != 1:
+        raise ConfigError("AMBIGUOUS_NAME", "指定单个图层名时只能导入一个数据集。")
     runtime = GdalRuntime(
         environment.gdal_bin,
         expected_version=environment.gdal_version,
         credential_env_names=(environment.username_env, environment.password_env),
     )
     capabilities = runtime.probe()
-    paths = discover_sources([Path(p).absolute() for p in sources])
-    if not paths:
-        raise ConfigError("NO_DATASETS", "未找到受支持的 SHP 或 GeoTIFF。")
-    if target_name and len(paths) != 1:
-        raise ConfigError("AMBIGUOUS_NAME", "指定单个图层名时只能导入一个数据集。")
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         output.mkdir(exist_ok=False)
@@ -102,6 +110,7 @@ def build_plan(
             raise ConfigError("DUPLICATE_TARGET", "多个输入映射到同名图层，请拆分任务或调整文件名。")
         used_names.add(target)
         info = runtime.inspect(source, encoding=encoding, declared_crs=declared_crs)
+        info["source"] = str(source)
         resource = {
             "resource_id": resource_id,
             "target_name": target,
@@ -160,7 +169,7 @@ def build_plan(
                 )
         resources.append(resource)
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "task_id": task_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "environment": environment.to_dict(),
@@ -168,10 +177,13 @@ def build_plan(
         "enable_wfs": bool(enable_wfs),
         "output_dir": str(output),
         "capabilities": capabilities,
+        "import_intent": import_intent,
         "resources": resources,
         "ready": not any(r["blocking_errors"] for r in resources),
         "catalog_mode": "export-only",
     }
+    validate_plan(plan)
+    verify_import_intent(import_intent)
     plan["plan_hash"] = fingerprint(plan)
     save_json(output / "plan.json", plan)
     return plan
@@ -187,18 +199,20 @@ def load_plan(path: Path | str) -> dict:
         plan["plan_hash"] = recorded_hash
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise ConfigError("INVALID_PLAN", "计划文件无效。请重新生成计划。") from exc
-    if recorded_hash != actual_hash or plan.get("schema_version") != 1:
+    if recorded_hash != actual_hash or plan.get("schema_version") not in (1, 2):
         raise ConfigError("PLAN_CHANGED", "计划已改变或版本不兼容；请重新预检并确认。")
     validate_plan(plan)
     return plan
 
 
 def validate_plan(plan: dict) -> None:
+    from .imports import validate_import_intent
+
     try:
         if (
             not isinstance(plan, dict)
             or type(plan["schema_version"]) is not int
-            or plan["schema_version"] != 1
+            or plan["schema_version"] not in (1, 2)
         ):
             raise ValueError()
         if str(uuid.UUID(plan["task_id"])) != plan["task_id"]:
@@ -247,6 +261,10 @@ def validate_plan(plan: dict) -> None:
                         r"[0-9a-f]{64}", source["sha256"]
                     ):
                         raise ValueError()
+                if plan["schema_version"] == 2 and resource["inspection"]["source"] not in {
+                    source["path"] for source in resource["artifact"]["source_hashes"]
+                }:
+                    raise ValueError()
                 bbox = resource["inspection"]["wgs84_bbox"]
                 if (
                     not isinstance(bbox, list)
@@ -256,6 +274,16 @@ def validate_plan(plan: dict) -> None:
                     raise ValueError()
                 if not (-180 <= bbox[0] <= bbox[2] <= 180 and -90 <= bbox[1] <= bbox[3] <= 90):
                     raise ValueError()
+        if plan["schema_version"] == 2:
+            validate_import_intent(plan["import_intent"], plan["resources"])
+            if any(
+                selection["kind"] == "directory"
+                and output.resolve().is_relative_to(Path(selection["path"]))
+                for selection in plan["import_intent"]["selections"]
+            ):
+                raise ValueError()
+        elif "import_intent" in plan:
+            raise ValueError()
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         if isinstance(exc, ConfigError):
             raise
@@ -265,6 +293,27 @@ def validate_plan(plan: dict) -> None:
 
 
 def verify_artifacts(plan: dict) -> None:
+    from .datasets import DatasetError
+    from .imports import prepare_imports, validate_import_intent, verify_import_intent
+
+    # Reading/cleanup of legacy plans must remain possible. Only execution
+    # requires import consent and current source context, before any client exists.
+    try:
+        if plan["schema_version"] == 2:
+            verify_import_intent(plan["import_intent"])
+        else:
+            if sum(r["kind"] == "geotiff" for r in plan["resources"]) > 1:
+                raise ConfigError(
+                    "LEGACY_RASTER_INTENT_REQUIRED",
+                    "旧版多 TIFF 计划未记录分别发布的确认，不能继续发布；请重新生成计划。"
+                    "已有任务的配置清理仍使用原计划。",
+                )
+            sources = [resource["inspection"].get("source") for resource in plan["resources"]]
+            if not all(isinstance(source, str) and Path(source).is_absolute() for source in sources):
+                raise ConfigError("INVALID_PLAN", "旧计划缺少可核对的源文件路径；请重新生成计划。")
+            validate_import_intent(prepare_imports(sources), plan["resources"])
+    except DatasetError as exc:
+        raise ConfigError(exc.code, str(exc)) from exc
     for resource in plan["resources"]:
         for artifact in (resource.get("artifact"), resource.get("style")):
             if (

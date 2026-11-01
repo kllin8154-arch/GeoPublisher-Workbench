@@ -2,7 +2,13 @@
 
 本记录区分本地实测、模拟故障测试和尚待现场验收的部分。所有 GIS 数据均由数学规则生成，没有使用真实项目数据或业务数据库。
 
+## 多 TIFF 改动的双平台增量验证
+
+在 `bb83e77` 基线上实现导入意图和已知结构阻断后，最终验证提交为 `6dff92e`。Linux 本地全量 **414 passed**；Windows 本地 **409 passed, 5 skipped**，5 项均因符号链接权限跳过，原生 GDAL 用例在两台机器均实际执行。Ruff、离线锁检查和构建通过。离线脚本在中文/空格路径中使用两份合成 TIFF 和真实 Qt 后台，两平台各完成 28 次原生调用；未确认、输入变化、已知结构标记均阻断，HTTP 客户端创建及 Python socket 连接尝试为 0，源哈希不变。Windows 原生平台、中文和勾选状态截图已复核，详见 [多 TIFF 增量记录](VALIDATION-RASTER-IMPORTS-2026-11-01.md)。下述历史基线保留原数值。
+
 ## 最新 Windows 本地验证
+
+PR #2 在 `6dff92e` 完成上述 409/5 全量测试及原生桌面增量验收；uv 0.13.4 官方 Windows 产物重新通过摘要及 artifact attestation 校验，显式调用该版本完成离线锁检查。首次发现的 Unix 测试路径假设、CI 中的默认文本编码问题及 Qt 系统库依赖均有独立修正记录，详见 [Windows 报告第 8 节](VALIDATION-WINDOWS-2026-11-01.md#8-pr-2-多-tiff-导入的-windows-增量验证)。
 
 PR #1（`d8bb643`）已在保留原文档的独立分支完成增量验证：**332 passed, 4 skipped**，新增原生 GDAL 用例实际执行；三类凭据配置的中文路径五资源预检通过，原生桌面后台生成计划通过，默认/自定义凭据不进入 GDAL，父进程凭据读取正常。该补丁关闭凭据继承问题，详见 [Windows 报告第 7 节](VALIDATION-WINDOWS-2026-11-01.md#7-pr-1-凭据隔离补丁的-windows-增量验证)。
 
@@ -65,9 +71,11 @@ python -m build --no-isolation      sdist + wheel built successfully
 
 已配置 `windows-latest` 与 `ubuntu-24.04` CI，以及 Windows PyInstaller 桌面预览构建。具体远程结果以对应 GitHub Actions 运行记录为准。
 
+PR #2 的 [Actions #8](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41286109109) 已在 `6dff92e` 的合并预览上完整成功：两平台均 **413 passed, 1 skipped**；唯一跳过为 CI 未安装受控 GDAL，符号链接测试均执行。Ruff、sdist/wheel、Windows PyInstaller 预览及产物上传均成功。CI 的原生 GDAL 缺口由本机独立结果补充，不能把 CI 计为完整离线运行时验收。以下早期资源阻塞记录保留其历史含义。
+
 首次远程运行 [Actions #1](https://github.com/kllin8154-arch/GeoPublisher-Workbench/actions/runs/41222715209) 已触发，但两个 job 均未启动。GitHub 返回账户侧 runner 资源限制。该结果是运行资源阻塞，不包含任何远程测试或 Windows 构建执行证据；不能据此宣称 Windows 已通过，也没有可下载的 Windows 构建产物。
 
-本地 Windows 10 已于 2026-11-01 完成同一 Python 测试、wheel/sdist、PyInstaller 预览、原生桌面启动、受控 GDAL 和一次性 GeoServer 集成检查。PyInstaller 预览构建成功，但其中仍不包含 GDAL/PROJ；详细结果见 [Windows 本地验证报告](VALIDATION-WINDOWS-2026-11-01.md)。以下命令可用于 Windows 本地复核；远程 CI 仍应在 runner 资源恢复后从 Actions 单独重跑：
+本地 Windows 10 已于 2026-11-01 完成同一 Python 测试、wheel/sdist、PyInstaller 预览、原生桌面启动、受控 GDAL 和一次性 GeoServer 集成检查。PyInstaller 预览构建成功，但其中仍不包含 GDAL/PROJ；详细结果见 [Windows 本地验证报告](VALIDATION-WINDOWS-2026-11-01.md)。以下命令可用于 Windows 本地复核，原生运行时和真实服务集成仍需与远程 CI 分别记录：
 
 ```powershell
 $env:QT_QPA_PLATFORM = 'offscreen'
@@ -82,7 +90,7 @@ Windows 10 本机已完成原生桌面启动与中文字体烟测，并验证 Pi
 
 GDAL 凭据继承已由 PR #1 修复并完成 Windows 增量验证；旧提交的失败证据保留在 Windows 报告第 1–6 节。以下项目仍待验收：
 
-- 产品负责人确认是否接受当前“多 TIFF 独立图层”对原始 Mosaic/Pyramid 候选阻断要求的偏离。
+- 无标记 Mosaic/Pyramid 结构的检测边界及实际组合意图仍需人工核对；本次已知标记与明确意图的 Windows 增量验收已完成。
 - Windows/Linux 完整离线包、断网安装、许可证清单及干净目标机验收。
 - 现场反向代理、证书链、账号权限及目标 GeoServer 版本。
 - 真实业务目录字段、默认值、唯一键、外键、触发器与页面可见性。

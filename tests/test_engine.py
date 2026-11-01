@@ -34,9 +34,9 @@ def make_plan(tmp_path, *, count=1, strategy="fail", enable_wfs=False, kinds=Non
         rid = f"r{index + 1:04d}"
         directory = output / rid
         directory.mkdir()
-        source = directory / "synthetic-source.txt"
-        source.write_text(f"synthetic dataset {index}", encoding="utf-8")
         kind = kinds[index] if kinds else "shapefile"
+        source = directory / ("synthetic-source.shp" if kind == "shapefile" else "synthetic-source.tif")
+        source.write_text(f"synthetic dataset {index}", encoding="utf-8")
         artifact = directory / ("dataset.zip" if kind == "shapefile" else "dataset.tif")
         artifact.write_bytes(b"synthetic-package-" + str(index).encode())
         style = directory / "style.sld"
@@ -49,6 +49,7 @@ def make_plan(tmp_path, *, count=1, strategy="fail", enable_wfs=False, kinds=Non
                 "style_name": f"style_{index}_{task_id.replace('-', '')[:12]}",
                 "kind": kind,
                 "inspection": {
+                    "source": str(source),
                     "crs": "EPSG:4326",
                     "wgs84_bbox": [100, 20, 101, 21],
                     "native_name": "synthetic",
@@ -82,6 +83,34 @@ def make_plan(tmp_path, *, count=1, strategy="fail", enable_wfs=False, kinds=Non
     }
     plan["plan_hash"] = fingerprint(plan)
     return plan
+
+
+def test_new_source_structure_blocks_replay_but_does_not_prevent_owned_cleanup(tmp_path):
+    from geopublisher.imports import prepare_imports
+
+    plan = make_plan(tmp_path, count=2, kinds=["geotiff", "geotiff"])
+    plan["schema_version"] = 2
+    plan["import_intent"] = prepare_imports(
+        [r["inspection"]["source"] for r in plan["resources"]], raster_mode="independent"
+    )
+    plan.pop("plan_hash")
+    plan["plan_hash"] = fingerprint(plan)
+    server = StatefulGeoServer()
+    assert run_plan(plan, client=server)["status"] == "SUCCEEDED"
+    first_write_count = len(server.mutations)
+    (Path(plan["output_dir"]) / "pyramid.properties").write_text(
+        "Levels=1,1\nLevelsDirs=full preview\nLevelsNum=2\nGeneralBounds=0,0 1,1\n"
+    )
+    with pytest.raises(ConfigError) as caught:
+        run_plan(plan, client=server)
+    assert caught.value.code == "UNSUPPORTED_PYRAMID"
+    assert len(server.mutations) == first_write_count
+    for resource in plan["resources"]:
+        Path(resource["inspection"]["source"]).unlink()
+    result = rollback_plan(plan, client=server)
+    assert result["status"] == "ROLLED_BACK"
+    assert not server.layers and not server.stores and not server.styles
+    assert len(server.uploaded_files) == 2
 
 
 def journal_path(plan):

@@ -153,7 +153,9 @@ def test_unsafe_table_identifiers_rejected(tmp_path, bad):
 
 
 def test_unreviewed_example_is_deliberately_blocked(tmp_path):
-    example = json.loads((Path(__file__).parents[1] / "examples/catalog-mapping.example.json").read_text())
+    example = json.loads(
+        (Path(__file__).parents[1] / "examples/catalog-mapping.example.json").read_text(encoding="utf-8")
+    )
     with pytest.raises(CatalogError) as error:
         generate_catalog(bindings(), example, tmp_path)
     assert error.value.code == "SCHEMA_NOT_VERIFIED"

@@ -635,3 +635,81 @@ def test_first_bind_does_not_accept_queryable_false_as_a_materialized_default(tm
     server.after_bind = lambda layer: layer.update(queryable=False)
     assert run_plan(plan, client=server)["status"] == "MANUAL_ACTION_REQUIRED"
     assert server.map_calls == 0
+
+
+def test_successful_cleanup_inventory_is_explicitly_journal_only(tmp_path):
+    plan, server = make_plan(tmp_path, count=2), StatefulGeoServer()
+    assert run_plan(plan, client=server)["status"] == "SUCCEEDED"
+    result = rollback_plan(plan, client=server)
+    inventory = result["recovery_inventory"]
+    assert inventory["evidence_source"] == "LOCAL_JOURNAL_ONLY"
+    assert inventory["requires_live_reconciliation"] is False
+    assert len(inventory["objects"]) == 8
+    assert {entry["state"] for entry in inventory["objects"]} == {
+        "CONFIRMED_ABSENT_AT_LAST_CHECK"
+    }
+    assert inventory["unresolved_operations"] == []
+    saved = json.loads(
+        (Path(plan["output_dir"]) / "cleanup-report.json").read_text(encoding="utf-8")
+    )
+    assert saved["recovery_inventory"] == inventory
+
+
+def test_interrupted_cleanup_reports_each_pending_and_unknown_object(tmp_path):
+    plan, server = make_plan(tmp_path, count=2), StatefulGeoServer()
+    assert run_plan(plan, client=server)["status"] == "SUCCEEDED"
+    # Resource 2 is first in cleanup order: its layer is deleted, but the
+    # resource DELETE succeeds remotely and then loses the HTTP response.
+    server.fail_once("DELETE_RESOURCE", after=True, unknown=True)
+    with pytest.raises(GeoServerError):
+        rollback_plan(plan, client=server)
+
+    report = json.loads(
+        (Path(plan["output_dir"]) / "cleanup-report.json").read_text(encoding="utf-8")
+    )
+    inventory = report["recovery_inventory"]
+    assert report["status"] == "MANUAL_ACTION_REQUIRED"
+    assert report["server_data_retained"] is True
+    assert inventory["requires_live_reconciliation"] is True
+    assert inventory["evidence_source"] == "LOCAL_JOURNAL_ONLY"
+    by_key = {
+        (item["resource_id"], item["kind"]): item["state"]
+        for item in inventory["objects"]
+    }
+    assert by_key[("r0002", "layer")] == "CONFIRMED_ABSENT_AT_LAST_CHECK"
+    assert by_key[("r0002", "resource")] == "DELETE_OUTCOME_UNKNOWN"
+    assert by_key[("r0002", "store")] == "NOT_CONFIRMED_REMOVED"
+    assert by_key[("r0002", "style")] == "NOT_CONFIRMED_REMOVED"
+    assert {by_key[("r0001", kind)] for kind in ("layer", "resource", "store", "style")} == {
+        "NOT_CONFIRMED_REMOVED"
+    }
+    assert inventory["unresolved_operations"] == [
+        {"resource_id": "r0002", "action": "DELETE_RESOURCE", "outcome": "UNKNOWN"}
+    ]
+    mutations = list(server.mutations)
+    with pytest.raises(RecoveryRequired):
+        rollback_plan(plan, client=server)
+    assert server.mutations == mutations
+    assert "credentials" not in json.dumps(report).lower()
+
+
+def test_cleanup_preflight_rejection_reports_uncleared_objects_without_deleting(tmp_path):
+    plan, server = make_plan(tmp_path), StatefulGeoServer()
+    assert run_plan(plan, client=server)["status"] == "SUCCEEDED"
+    resource = plan["resources"][0]
+    server.style_bodies[("maps", resource["style_name"])] += b"<!-- changed by actor -->"
+    existing_mutations = list(server.mutations)
+    with pytest.raises(RecoveryRequired):
+        rollback_plan(plan, client=server)
+    report = json.loads(
+        (Path(plan["output_dir"]) / "cleanup-report.json").read_text(encoding="utf-8")
+    )
+    assert len(report["recovery_inventory"]["objects"]) == 4
+    assert {x["state"] for x in report["recovery_inventory"]["objects"]} == {
+        "NOT_CONFIRMED_REMOVED"
+    }
+    assert report["recovery_inventory"]["requires_live_reconciliation"] is True
+    assert server.mutations == existing_mutations
+
+    with Journal(journal_path(plan)) as audit:
+        assert audit.get_task(plan["task_id"])["status"] == "MANUAL_ACTION_REQUIRED"

@@ -55,6 +55,72 @@ def _bbox(bounds: list[float]) -> list[float]:
     return [max(-180.0, x0 - dx), max(-90.0, y0 - dy), min(180.0, x1 + dx), min(90.0, y1 + dy)]
 
 
+def cleanup_recovery_inventory(plan: dict, journal: Journal) -> dict:
+    """Summarize *journal-only* cleanup evidence, without further remote reads.
+
+    A previous confirmed deletion is not proof that the remote object remains
+    absent after an external actor intervenes. Unknown/started deletions must
+    never be interpreted as successful or safe to retry automatically.
+    """
+    objects: list[dict] = []
+    unresolved_operations: list[dict] = []
+    task_id = plan["task_id"]
+    for resource in plan["resources"]:
+        rid = resource["resource_id"]
+        operations = journal.operations(task_id, rid)
+        for operation in operations:
+            if operation["outcome"] in {"UNKNOWN", "INTENT"}:
+                unresolved_operations.append(
+                    {
+                        "resource_id": rid,
+                        "action": operation["action"],
+                        "outcome": operation["outcome"],
+                    }
+                )
+        for obj in journal.objects(task_id, rid):
+            matching = [
+                operation
+                for operation in operations
+                if operation["action"] == "DELETE_" + obj["kind"].upper()
+                and isinstance(operation.get("target"), dict)
+                and operation["target"].get("kind") == obj["kind"]
+                and operation["target"].get("name") == obj["name"]
+            ]
+            last = matching[-1] if matching else None
+            if (
+                last is not None
+                and last["outcome"] == "SUCCEEDED"
+                and isinstance(last.get("evidence"), dict)
+                and last["evidence"].get("confirmed_absent") is True
+            ):
+                state = "CONFIRMED_ABSENT_AT_LAST_CHECK"
+            elif last is not None and last["outcome"] in {"UNKNOWN", "INTENT"}:
+                state = "DELETE_OUTCOME_UNKNOWN"
+            else:
+                state = "NOT_CONFIRMED_REMOVED"
+            objects.append(
+                {
+                    "resource_id": rid,
+                    "kind": obj["kind"],
+                    "name": obj["name"],
+                    "state": state,
+                }
+            )
+    return {
+        "evidence_source": "LOCAL_JOURNAL_ONLY",
+        "requires_live_reconciliation": bool(
+            unresolved_operations
+            or any(item["state"] != "CONFIRMED_ABSENT_AT_LAST_CHECK" for item in objects)
+        ),
+        "objects": objects,
+        "unresolved_operations": unresolved_operations,
+        "message": (
+            "本清单仅汇总本地任务记录，不代表实时服务器状态。"
+            "请由授权人员对照 GeoServer 逐项确认；结果未知时不得自动重试删除。"
+        ),
+    }
+
+
 class Publisher:
     def __init__(self, plan: dict, journal: Journal, client, on_event=None, cancel_event=None):
         self.plan, self.journal, self.client = plan, journal, client
@@ -623,12 +689,14 @@ def rollback_plan(plan: dict, journal_path=None, *, credentials=None, client=Non
                     "status": "ROLLED_BACK",
                     "removed": removed,
                     "server_data_retained": True,
+                    "recovery_inventory": cleanup_recovery_inventory(plan, journal),
                     "message": "已删除本任务拥有的服务配置；服务器上传文件保留，未执行物理数据清除。",
                 }
                 save_json(output / "cleanup-report.json", result)
                 return result
             except Exception as exc:
                 if cleanup_locked:
+                    journal.set_task_status(plan["task_id"], "MANUAL_ACTION_REQUIRED")
                     code, message = _safe_error(exc)
                     journal.add_event(
                         plan["task_id"],
@@ -645,6 +713,7 @@ def rollback_plan(plan: dict, journal_path=None, *, credentials=None, client=Non
                             "message": message,
                             "removed": removed,
                             "server_data_retained": True,
+                            "recovery_inventory": cleanup_recovery_inventory(plan, journal),
                         },
                     )
                 raise

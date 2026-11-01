@@ -710,3 +710,6 @@ def test_cleanup_preflight_rejection_reports_uncleared_objects_without_deleting(
     }
     assert report["recovery_inventory"]["requires_live_reconciliation"] is True
     assert server.mutations == existing_mutations
+
+    with Journal(journal_path(plan)) as audit:
+        assert audit.get_task(plan["task_id"])["status"] == "MANUAL_ACTION_REQUIRED"

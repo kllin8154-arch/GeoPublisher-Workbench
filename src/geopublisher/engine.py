@@ -696,6 +696,7 @@ def rollback_plan(plan: dict, journal_path=None, *, credentials=None, client=Non
                 return result
             except Exception as exc:
                 if cleanup_locked:
+                    journal.set_task_status(plan["task_id"], "MANUAL_ACTION_REQUIRED")
                     code, message = _safe_error(exc)
                     journal.add_event(
                         plan["task_id"],

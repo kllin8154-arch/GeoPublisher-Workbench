@@ -2,7 +2,7 @@
 
 import json
 
-from scripts.audit_portable_licenses import _license_candidate, audit, audit_conda, audit_python_metadata
+from geopublisher.license_audit import _license_candidate, audit, audit_conda, audit_python_metadata
 
 
 def _bundle(tmp_path):

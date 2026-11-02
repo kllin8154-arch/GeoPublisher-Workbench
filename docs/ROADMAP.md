@@ -33,6 +33,7 @@
 - [x] GDB→SHP 受控 GDAL 离线转换原型，按图层预检/选择、短字段映射与 CSV、失败隔离，已有真实本地测试 GDB 证据
 - [x] MXD→SHP/LYR 的 ArcMap 10.x 离线辅助脚本与纯模拟调用测试；LYR→SLD 经 QGIS 插件导出后同名批量配对
 - [x] GDB 字段对照与 SLD 的简单字段引用显式映射，逐文件哈希和计划副本留痕，复杂表达式拒绝自动修复
+- [x] 数学生成 GDB→SHP→短字段映射→SLD 在 GeoServer 2.24.4 上的真实只读 WMS 分类像素验证（停机准备测试 catalog，非正式 REST 发布；[验证](VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)）
 - [ ] 在真正 ArcMap/QGIS 离线环境验证真实 MXD/LYR 转换和 SLD 实图一致性
 - [ ] SFTP/共享目录的大文件传输
 - [ ] 已知 ImagePyramid 目录兼容

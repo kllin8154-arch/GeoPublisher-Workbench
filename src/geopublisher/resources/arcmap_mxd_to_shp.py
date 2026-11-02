@@ -80,7 +80,7 @@ def eligible(layer, arc):
     return True, u"本地矢量数据"
 
 
-def export_mxd(mxd_file, output_dir, allow_filtered=False, arc=None):
+def export_mxd(mxd_file, output_dir, allow_filtered=False, arc=None, cancel_file=None):
     if arc is None:
         import arcpy
         arc = arcpy
@@ -99,6 +99,10 @@ def export_mxd(mxd_file, output_dir, allow_filtered=False, arc=None):
             for layer in arc.mapping.ListLayers(document, "", frame):
                 row = {"source_layer": as_text(getattr(layer, "name", u"未命名")),
                        "data_frame": as_text(frame.name)}
+                if cancel_file and os.path.isfile(cancel_file):
+                    row.update(status="CANCELLED", reason=u"用户请求安全取消，未开始此图层")
+                    results.append(row)
+                    continue
                 try:
                     ok, reason = eligible(layer, arc)
                     if not ok:
@@ -148,15 +152,17 @@ def main(argv=None):
     parser.add_argument("mxd")
     parser.add_argument("output")
     parser.add_argument("--allow-filtered", action="store_true")
+    parser.add_argument("--cancel-file", help="本地取消检查点文件")
     args = parser.parse_args(argv)
     try:
-        report = export_mxd(args.mxd, args.output, allow_filtered=args.allow_filtered)
+        report = export_mxd(args.mxd, args.output, allow_filtered=args.allow_filtered,
+                            cancel_file=args.cancel_file)
     except ValueError as error:
         print_status(error)
         return 2
     exported = sum(row["status"] in ("EXPORTED", "SHP_EXPORTED_LYR_FAILED") for row in report["items"])
     print_status(u"完成：SHP {0} 个，清单在新输出目录。".format(exported))
-    return 0 if exported else 1
+    return 0 if exported and not any(row["status"] == "CANCELLED" for row in report["items"]) else 1
 
 
 if __name__ == "__main__":

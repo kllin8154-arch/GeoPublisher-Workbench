@@ -239,6 +239,8 @@ class MainWindow(QMainWindow):
         self._cancel = threading.Event()
         self._connection_testing = False
         self._pending_gdb_conversion = None
+        self._offline_running = False
+        self._offline_report_path: Path | None = None
         self._close_when_idle = False
         self._building_forms = True
         self._preview_paths: list[Path] = []
@@ -464,6 +466,17 @@ class MainWindow(QMainWindow):
         note = QLabel("下一步只做本地预检并创建副本，不连接 GeoServer。源文件不变；声明坐标系也不会转换数据。")
         note.setObjectName("muted")
         box.addWidget(note)
+        offline_controls = QHBoxLayout()
+        self.offline_cancel_button = QPushButton("请求安全取消本地转换")
+        self.offline_cancel_button.setVisible(False)
+        self.offline_cancel_button.clicked.connect(self._request_cancel)
+        offline_controls.addWidget(self.offline_cancel_button)
+        self.offline_report_button = QPushButton("打开本地转换报告")
+        self.offline_report_button.setEnabled(False)
+        self.offline_report_button.clicked.connect(self._open_offline_report)
+        offline_controls.addWidget(self.offline_report_button)
+        offline_controls.addStretch()
+        box.addLayout(offline_controls)
         box.addStretch()
         self.inspect_button = QPushButton("下一步：检查数据")
         self.inspect_button.setObjectName("primary")
@@ -867,6 +880,111 @@ class MainWindow(QMainWindow):
             self.sld_directory.setText(directory)
             self.advanced_import_button.setChecked(True)
 
+    def _start_direct_conversion(self, kind: str) -> None:
+        """Choose local input/runtime, require confirmation, then use the Qt worker."""
+        from .offline_conversion import (
+            OfflineConversionError,
+            local_python_environment,
+            run_offline_conversion,
+            suggested_runtime,
+        )
+
+        if self._thread is not None or kind not in {"mxd", "lyr"}:
+            return
+        if kind == "mxd":
+            source, _filter = QFileDialog.getOpenFileName(
+                self, "选择本地 ArcMap MXD 地图", str(self._work_dir), "ArcMap 地图 (*.mxd)"
+            )
+        else:
+            source = QFileDialog.getExistingDirectory(
+                self, "选择包含同名 SHP / LYR 的本地目录", str(self._work_dir)
+            )
+        if not source:
+            return
+        executable = suggested_runtime(kind)
+        if not executable:
+            executable, _filter = QFileDialog.getOpenFileName(
+                self, "选择本机 ArcGIS / QGIS 的 python.exe", str(self._work_dir),
+                "Python 程序 (python.exe)"
+            )
+        if not executable:
+            return
+        try:
+            local_python_environment(kind, executable)
+        except OfflineConversionError as exc:
+            QMessageBox.warning(self, "本地 GIS 环境未通过", str(exc))
+            return
+        root = Path(self.output_root.text()).expanduser().absolute()
+        name = "MXD → SHP + LYR" if kind == "mxd" else "LYR → QML + SLD"
+        answer = QMessageBox.question(
+            self, "确认本地离线转换",
+            f"转换类型：{name}\n来源：{source}\n使用本机 Python：{executable}\n"
+            f"新任务将保存在：{root}\n\n"
+            "只在本机新建输出，原文件保持不变；不会连接 GeoServer 或数据库。"
+            "取消将在图层间安全检查点处理，不会强杀进程。\n\n现在开始？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._cancel = threading.Event()
+        self._offline_running = True
+        self.offline_cancel_button.setEnabled(True)
+        self.offline_cancel_button.setVisible(True)
+        self.offline_report_button.setEnabled(False)
+        self._offline_report_path = None
+        self.activity.setText("正在使用本机 GIS 工具离线转换；查看进度，或请求安全取消。")
+        self._start_worker(
+            lambda on_event: run_offline_conversion(
+                kind, source, executable, root,
+                on_event=on_event, cancel_event=self._cancel,
+            ),
+            self._show_offline_conversion_result,
+        )
+
+    def _show_offline_conversion_result(self, result: dict) -> None:
+        kind = result.get("kind")
+        status = result.get("status", "INCOMPLETE")
+        success = int(result.get("converted") or 0)
+        total = int(result.get("total") or 0)
+        job = result.get("job", "")
+        report = result.get("report")
+        self._offline_report_path = Path(report) if report else None
+        self.offline_report_button.setEnabled(bool(report))
+        summary = (
+            f"本地转换状态：{status}，成功 {success}/{total} 个图层。\n"
+            f"任务目录：{job}\n"
+            "原始文件不变。复杂符号、中文标注及样式视觉效果需要人工核对。"
+        )
+        self.activity.setText(summary)
+        if status != "SUCCEEDED":
+            QMessageBox.warning(
+                self, "转换未全部完成",
+                summary + "\n已生成的报告和中间文件保留在新任务目录；请先检查，不自动加入发布。",
+            )
+            return
+        if kind == "mxd":
+            message = summary + "\n\n是否将导出的 SHP 加入发布任务？LYR 样式可继续在 QGIS 离线转换。"
+        else:
+            message = summary + "\n\n是否加入对应 SHP，并在本任务中使用刚生成的 SLD？"
+        choice = QMessageBox.question(
+            self, "本地转换完成", message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        if kind == "mxd":
+            self.add_sources([result["output"]])
+        else:
+            self.add_sources([result["source"]])
+            self.sld_directory.setText(result["output"])
+            self.advanced_import_button.setChecked(True)
+
+    def _open_offline_report(self) -> None:
+        if self._offline_report_path is not None and self._offline_report_path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._offline_report_path)))
+
     def _export_arcmap_helper(self) -> None:
         from .arcgis_bridge import save_arcmap_helper
 
@@ -893,7 +1011,7 @@ class MainWindow(QMainWindow):
     def _arcgis_conversion(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("GIS 数据与样式离线转换")
-        dialog.resize(650, 470)
+        dialog.resize(650, 560)
         layout = QVBoxLayout(dialog)
         hint = QLabel(
             "① GDB → SHP：使用受控 GDAL 在本机批量导出要素类，原始 GDB 不变，附字段映射报告。"
@@ -905,6 +1023,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
         annotation = QCheckBox("也导出注记图层的几何边界（不保留真实文字排版）")
         layout.addWidget(annotation)
+        direct_mxd_button = QPushButton("直接转换 MXD → SHP + LYR（本机 ArcMap）")
+        direct_mxd_button.clicked.connect(
+            lambda: (dialog.accept(), self._start_direct_conversion("mxd"))
+        )
+        layout.addWidget(direct_mxd_button)
+        direct_lyr_button = QPushButton("直接转换 LYR → SLD（本机 QGIS）")
+        direct_lyr_button.clicked.connect(
+            lambda: (dialog.accept(), self._start_direct_conversion("lyr"))
+        )
+        layout.addWidget(direct_lyr_button)
         gdb_button = QPushButton("GDB 批量转换为 SHP（本地离线）")
         gdb_button.clicked.connect(
             lambda: (dialog.accept(), self._choose_gdb_and_export(annotation.isChecked()))
@@ -1382,6 +1510,9 @@ class MainWindow(QMainWindow):
         self.settings_nav.setEnabled(not busy)
         self.history.setEnabled(not busy)
         self.execute_button.setEnabled(not busy and self._can_execute_plan())
+        self.offline_report_button.setEnabled(
+            not busy and self._offline_report_path is not None
+        )
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if busy else 1)
 
@@ -1398,6 +1529,10 @@ class MainWindow(QMainWindow):
         if self._close_when_idle:
             return
         message = f"{error['code']}：{error['message']}"
+        if self._offline_running:
+            self.activity.setText(message)
+            QMessageBox.warning(self, "本地转换未完成", message)
+            return
         self.activity.setText(message)
         if self._connection_testing:
             self.connection_status.setText("连接未通过：" + message + "。请检查服务器地址、工作空间和凭据。")
@@ -1418,6 +1553,8 @@ class MainWindow(QMainWindow):
         self._worker_success = None
         self._set_busy(False)
         self.cancel_button.setEnabled(False)
+        self._offline_running = False
+        self.offline_cancel_button.setVisible(False)
         if self._close_when_idle:
             self._pending_gdb_conversion = None
             self._close_when_idle = False
@@ -1442,6 +1579,10 @@ class MainWindow(QMainWindow):
     def _request_cancel(self) -> None:
         self._cancel.set()
         self.cancel_button.setEnabled(False)
+        if self._offline_running:
+            self.offline_cancel_button.setEnabled(False)
+            self.activity.setText("已请求本地安全取消；完成当前图层后检查取消，转换结果会保留。")
+            return
         self.activity.setText("已请求安全取消；当前操作结束后将在安全检查点停止。")
 
     def show_result(self, result: dict) -> None:

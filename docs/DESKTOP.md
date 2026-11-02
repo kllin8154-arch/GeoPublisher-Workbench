@@ -97,3 +97,19 @@ GeoServer 发布过程中点击关闭，会询问是否请求安全取消，并�
 这只是本机的安装路径示例。脚本依赖用户自行安装的 QGIS Style Assistant 和 SLYR Community；输出全新目录内含按原 SHP 文件名命名的 QML、SLD 及 `lyr-conversion-report.json`，失败中间文件单独保留。完成后在工作台高级选项中选中**批量 SLD 目录**再预检。脚本不发送数据、不覆盖来源、不自动执行 GeoServer 发布。
 
 已在 ArcMap 10.8 + QGIS 4.2.1 的真实合成点线面样本中成功导出 3 份样式，中文路径及 SHA256 原文件不变测试通过；更复杂的地质分类、字体标注及 WMS 视觉一致性仍需人工核对。详细条件和限制见 [GDB/MXD/LYR 离线转换说明](IMPORT-GDB-MXD-LYR.md)。
+
+
+## 在桌面界面直接转换 MXD / LYR（无需手动运行命令）
+
+1. 打开 GeoPublisher Workbench → 发布任务 → GDB / MXD / LYR 转换。
+2. 如果来源为地图工程，选择 **直接转换 MXD → SHP + LYR（本机 ArcMap）**，然后选择 .mxd。必须能够访问 MXD 原来引用的本地 GDB/SHP；单凭 MXD 无法还原几何数据。
+3. 如果已具有同名 SHP/LYR，选择 **直接转换 LYR → SLD（本机 QGIS）**，选中同时含 .shp/.shx/.dbf/.prj/.cpg 和 .lyr 的本地文件夹。
+4. 工作台优先检查明确的本机 ArcGIS/QGIS Python 安装位置，找不到时提示自行选择 python.exe；确认窗口会显示准确运行时、数据源和 D 盘新任务根目录。**不执行 BAT/CMD，不使用系统 PATH 猜测运行时**。
+5. 确认后，转换在后台线程运行。进度和结果显示于工作台；点击 **请求安全取消本地转换** 会在下一图层开始前停止，不会强行结束正在执行的 ArcPy 操作；任务日志、输出与失败记录留在独立目录。
+6. 完成后可选择将新 SHP 加入发布清单，或把新生成的 SLD 自动填写为 **批量 SLD 目录**。这一步只修改本机待审核的选择，**不会直接上传 GeoServer**；必须继续执行本地预检与发布确认。
+
+新任务目录名以 offline-mxd- 或 offline-lyr- 开头，包含 conversion.log、转换报告和 output/。可以点击 **打开本地转换报告**。数据源只读，拒绝原位覆盖已存在任务目录。
+
+本预览版在 Windows ArcGIS 10.8 / QGIS 4.2.1 上已使用合成数据验证；换机需要安装许可软件、插件（QGIS Style Assistant + SLYR）和对应本地运行时。它不是无需依赖的 MXD/LYR 内置二进制解释器。
+
+**注意：** 转换成功不代表 MXD 中的中文注记、复杂色带、比例尺或 ArcMap 样式在 GeoServer 中完全一致。必须另外检查 SLD 和真实 WMS 图片。详见 [本机直接转换验收](VALIDATION-DIRECT-MXD-LYR-2026-11-02.md)。

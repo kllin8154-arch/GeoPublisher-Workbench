@@ -250,3 +250,24 @@ def test_arcmap_python27_chinese_stdout_survives_redirect(tmp_path, monkeypatch)
 
     helper.print_status("完成：SHP 3 个，清单在新输出目录。")
     assert b"".join(output).decode("cp936").strip() == "完成：SHP 3 个，清单在新输出目录。"
+
+
+
+def test_arcmap_cancel_file_skips_every_layer_without_writing_shape(tmp_path):
+    script = save_arcmap_helper(tmp_path / "arcmap_cancel.py")
+    spec = importlib.util.spec_from_file_location("arcmap_cancel_module", script)
+    assert spec and spec.loader
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    mxd = tmp_path / "math.mxd"
+    mxd.write_bytes(b"synthetic-test")
+    source = tmp_path / "fake_original.shp"
+    source.write_bytes(b"synthetic-test")
+    fake, _layers = _fake_arcpy(source)
+    marker = tmp_path / "cancel.flag"
+    marker.write_text("cancel", encoding="ascii")
+    out = tmp_path / "new-cancel-output"
+    report = helper.export_mxd(str(mxd), str(out), arc=fake, cancel_file=str(marker))
+    assert [row["status"] for row in report["items"]] == ["CANCELLED", "CANCELLED"]
+    assert list(out.glob("*.shp")) == []
+    assert json.loads((out / "mxd-export-manifest.json").read_text(encoding="utf-8"))["uploaded"] is False

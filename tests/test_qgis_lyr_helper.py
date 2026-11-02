@@ -100,3 +100,17 @@ def test_qgis_helper_no_network_or_publishing_dependencies():
     # Import must remain safe even without PyQGIS, GDAL or a GeoServer.
     assert "GeoServer" not in helper.convert.__code__.co_names
     assert "subprocess" not in helper.convert.__code__.co_names
+
+
+
+def test_qgis_cli_forwards_cooperative_cancel_marker(monkeypatch, tmp_path):
+    observed = {}
+
+    def fake_convert(source, destination, **kwargs):
+        observed.update(source=source, destination=destination, cancel_file=kwargs["cancel_file"])
+        return [{"status": "CANCELLED"}]
+
+    monkeypatch.setattr(helper, "convert", fake_convert)
+    cancel = tmp_path / "cancel.flag"
+    assert helper.main(["input", "output", "--cancel-file", str(cancel)]) == 1
+    assert observed["cancel_file"] == str(cancel)

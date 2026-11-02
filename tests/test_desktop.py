@@ -925,3 +925,133 @@ def test_qgis_helper_button_exports_local_script_without_running_qgis(window, tm
     window._export_qgis_helper()
     assert events == ["saved", "blocked"]
     assert target.read_bytes() == qgis_helper_bytes()
+
+
+
+def test_direct_mxd_gui_runs_worker_and_offers_shp_import(window, app, tmp_path, monkeypatch):
+    """A local ArcMap selection does not execute REST or require console commands."""
+    from geopublisher import offline_conversion
+
+    mxd = tmp_path / "synthetic.mxd"
+    mxd.write_bytes(b"fake-synthetic")
+    exported = tmp_path / "exported"
+    exported.mkdir()
+    (exported / "demo.shp").write_bytes(b"synthetic")
+    report = exported / "mxd-export-manifest.json"
+    report.write_text('{"items":[]}', encoding="utf-8")
+    runtime = tmp_path / "ArcGIS10.8" / "python.exe"
+    monkeypatch.setattr(offline_conversion, "suggested_runtime", lambda _kind: str(runtime))
+    monkeypatch.setattr(offline_conversion, "local_python_environment", lambda *_: (runtime, {}))
+    calls = []
+
+    def convert(kind, source, executable, output_root, *, on_event, cancel_event):
+        calls.append((kind, source, executable, output_root))
+        on_event({"text": "合成 MXD 转换完成"})
+        return {
+            "kind": kind, "source": source, "output": str(exported),
+            "job": str(tmp_path), "report": str(report),
+            "status": "SUCCEEDED", "converted": 1, "total": 1,
+        }
+
+    monkeypatch.setattr(offline_conversion, "run_offline_conversion", convert)
+    monkeypatch.setattr(desktop.QFileDialog, "getOpenFileName",
+                        lambda *_args, **_kwargs: (str(mxd), "ArcMap (*.mxd)"))
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    window.show()
+    window._start_direct_conversion("mxd")
+    wait_until(app, lambda: window._thread is None)
+    assert [item[0] for item in calls] == ["mxd"]
+    assert window.sources.count() == 1
+    assert window.sources.item(0).text() == str(exported)
+    assert window.offline_report_button.isEnabled()
+    assert not window.offline_cancel_button.isVisible()
+
+
+def test_direct_lyr_gui_attaches_verified_sld_dir_after_confirmation(window, app, tmp_path, monkeypatch):
+    from geopublisher import offline_conversion
+
+    source = tmp_path / "local-math-layers"
+    source.mkdir()
+    (source / "math.shp").write_bytes(b"synthetic")
+    output = tmp_path / "styles"
+    output.mkdir()
+    report = output / "lyr-conversion-report.json"
+    report.write_text('{"items":[]}', encoding="utf-8")
+    runtime = tmp_path / "QGIS" / "bin" / "python.exe"
+    monkeypatch.setattr(offline_conversion, "suggested_runtime", lambda _kind: str(runtime))
+    monkeypatch.setattr(offline_conversion, "local_python_environment", lambda *_: (runtime, {}))
+    monkeypatch.setattr(
+        offline_conversion, "run_offline_conversion",
+        lambda kind, source_path, _exe, _root, **_kwargs: {
+            "kind": kind, "source": source_path, "output": str(output),
+            "job": str(tmp_path), "report": str(report),
+            "status": "SUCCEEDED", "converted": 1, "total": 1,
+        },
+    )
+    monkeypatch.setattr(desktop.QFileDialog, "getExistingDirectory",
+                        lambda *_args, **_kwargs: str(source))
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    window._start_direct_conversion("lyr")
+    wait_until(app, lambda: window._thread is None)
+    assert window.sources.count() == 1
+    assert window.sources.item(0).text() == str(source)
+    assert window.sld_directory.text() == str(output)
+    assert window.advanced_import_button.isChecked()
+
+
+def test_direct_conversion_safe_cancel_uses_worker_checkpoint(window, app, tmp_path, monkeypatch):
+    from geopublisher import offline_conversion
+
+    source = tmp_path / "test.mxd"
+    source.write_bytes(b"synthetic")
+    runtime = tmp_path / "ArcGIS10.8" / "python.exe"
+    started = threading.Event()
+    warnings = []
+    monkeypatch.setattr(offline_conversion, "suggested_runtime", lambda _kind: str(runtime))
+    monkeypatch.setattr(offline_conversion, "local_python_environment", lambda *_: (runtime, {}))
+    monkeypatch.setattr(desktop.QFileDialog, "getOpenFileName",
+                        lambda *_args, **_kwargs: (str(source), "ArcMap (*.mxd)"))
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *_args, **_kwargs: warnings.append("incomplete"))
+
+    def blocked_convert(kind, _source, _exe, _root, *, on_event, cancel_event):
+        started.set()
+        assert cancel_event.wait(8)
+        return {
+            "kind": kind, "status": "CANCELLED", "job": str(tmp_path),
+            "converted": 0, "total": 3, "report": None,
+        }
+
+    monkeypatch.setattr(offline_conversion, "run_offline_conversion", blocked_convert)
+    window.show()
+    window._start_direct_conversion("mxd")
+    wait_until(app, started.is_set)
+    assert window.offline_cancel_button.isVisible()
+    window._request_cancel()
+    assert window._cancel.is_set()
+    wait_until(app, lambda: window._thread is None)
+    assert warnings == ["incomplete"]
+    assert window.sources.count() == 0
+    assert window.sld_directory.text() == ""
+
+
+
+def test_conversion_dialog_exposes_direct_mxd_and_lyr_actions(window, monkeypatch):
+    """The two common conversion actions should not hide behind script exports."""
+    from PySide6.QtWidgets import QPushButton
+
+    labels = []
+
+    def inspect(dialog):
+        labels.extend(button.text() for button in dialog.findChildren(QPushButton))
+        return 0
+
+    monkeypatch.setattr(desktop.QDialog, "exec", inspect)
+    window._arcgis_conversion()
+    assert any("直接转换 MXD" in label for label in labels)
+    assert any("直接转换 LYR" in label for label in labels)
+    assert any("GDB 批量转换" in label for label in labels)

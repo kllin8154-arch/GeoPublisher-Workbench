@@ -102,16 +102,19 @@ def export_mxd(mxd_file, output_dir, allow_filtered=False, arc=None, cancel_file
                 if cancel_file and os.path.isfile(cancel_file):
                     row.update(status="CANCELLED", reason=u"用户请求安全取消，未开始此图层")
                     results.append(row)
+                    print_status("STYLE_CANCELLED=layer")
                     continue
                 try:
                     ok, reason = eligible(layer, arc)
                     if not ok:
                         row.update(status="SKIPPED", reason=reason)
                         results.append(row)
+                        print_status("STYLE_SKIPPED=layer")
                         continue
                     if getattr(layer, "definitionQuery", "") and not allow_filtered:
                         row.update(status="SKIPPED", reason=u"存在 Definition Query；需明确 --allow-filtered 才能导出子集")
                         results.append(row)
+                        print_status("STYLE_SKIPPED=layer")
                         continue
                     name = unique_name(layer.name, used)
                     shp = os.path.join(output_dir, name + u".shp")
@@ -134,6 +137,7 @@ def export_mxd(mxd_file, output_dir, allow_filtered=False, arc=None, cancel_file
                 except Exception:
                     row.update(status="FAILED", reason=u"图层导出失败；局部产物已保留，需人工核对")
                 results.append(row)
+                print_status("STYLE_" + row["status"] + "=layer")
     finally:
         del document
     report = {

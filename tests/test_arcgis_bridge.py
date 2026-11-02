@@ -271,3 +271,27 @@ def test_arcmap_cancel_file_skips_every_layer_without_writing_shape(tmp_path):
     assert [row["status"] for row in report["items"]] == ["CANCELLED", "CANCELLED"]
     assert list(out.glob("*.shp")) == []
     assert json.loads((out / "mxd-export-manifest.json").read_text(encoding="utf-8"))["uploaded"] is False
+
+
+
+def test_arcmap_helper_emits_one_progress_token_per_processed_layer(tmp_path, capsys):
+    """Real Qt worker can count layers from ArcPy console without reading GIS names."""
+    helper_path = save_arcmap_helper(tmp_path / "arcmap_helper_progress.py")
+    spec = importlib.util.spec_from_file_location("arcmap_progress_test", helper_path)
+    assert spec and spec.loader
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    mxd = tmp_path / "math.mxd"
+    mxd.write_bytes(b"synthetic-placeholder")
+    source = tmp_path / "original.shp"
+    source.write_bytes(b"synthetic-source")
+    fake, layers = _fake_arcpy(source)
+    layers[0].definitionQuery = "OBJECTID > 99"
+    report = helper.export_mxd(str(mxd), str(tmp_path / "export"), arc=fake)
+    assert [row["status"] for row in report["items"]] == ["SKIPPED", "EXPORTED"]
+    tokens = [
+        line.strip()
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("STYLE_")
+    ]
+    assert tokens == ["STYLE_SKIPPED=layer", "STYLE_EXPORTED=layer"]

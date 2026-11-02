@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -239,6 +239,7 @@ class MainWindow(QMainWindow):
         self._cancel = threading.Event()
         self._connection_testing = False
         self._pending_gdb_conversion = None
+        self._close_when_idle = False
         self._building_forms = True
         self._preview_paths: list[Path] = []
         self._preview_pixmap: QPixmap | None = None
@@ -1356,12 +1357,16 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _worker_completed(self, value: dict) -> None:
+        if self._close_when_idle:
+            return  # Do not open a follow-up dialog after the user requested closing.
         if self._worker_success:
             self._worker_success(value)
 
     @Slot(object)
     def _worker_failed(self, error: dict) -> None:
         self._pending_gdb_conversion = None
+        if self._close_when_idle:
+            return
         message = f"{error['code']}：{error['message']}"
         self.activity.setText(message)
         if self._connection_testing:
@@ -1383,6 +1388,11 @@ class MainWindow(QMainWindow):
         self._worker_success = None
         self._set_busy(False)
         self.cancel_button.setEnabled(False)
+        if self._close_when_idle:
+            self._pending_gdb_conversion = None
+            self._close_when_idle = False
+            QTimer.singleShot(0, self.close)
+            return
         self._refresh_history()
         if self._pending_gdb_conversion is not None:
             pending, self._pending_gdb_conversion = self._pending_gdb_conversion, None
@@ -1557,20 +1567,32 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: object) -> None:
         if self._thread is not None:
+            if self._close_when_idle:
+                event.ignore()
+                return
             if self.steps.currentIndex() != 2:
-                QMessageBox.information(
-                    self, "数据检查仍在运行", "本次数据检查结束后可关闭窗口。请保留窗口等待检查完成。"
+                answer = QMessageBox.question(
+                    self,
+                    "本地操作仍在运行",
+                    "是否在当前检查或转换结束后自动关闭窗口？\n不会强制终止正在处理的文件。",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
                 )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self._close_when_idle = True
+                    self._pending_gdb_conversion = None
+                    self.activity.setText("已安排操作结束后自动关闭，当前操作继续在本机执行。")
                 event.ignore()
                 return
             answer = QMessageBox.question(
                 self,
-                "任务仍在运行",
-                "是否请求安全取消？窗口将在任务停止后允许关闭。",
+                "发布任务仍在运行",
+                "是否请求安全取消，并在任务停止后自动关闭？\n当前服务端操作不会被强制中断。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             if answer == QMessageBox.StandardButton.Yes:
+                self._close_when_idle = True
                 self._request_cancel()
             event.ignore()
             return

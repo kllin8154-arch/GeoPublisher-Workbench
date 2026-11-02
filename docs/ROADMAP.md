@@ -10,6 +10,7 @@
 - [x] 新建、跳过、固定名称新版本
 - [x] 中文桌面薄壳与实际地图预览
 - [x] QThread 排队启动消除极快 worker 的线程事件循环竞态，连续压力回归及 Windows 多轮全量测试；[验证记录](VALIDATION-QT-WORKER-2026-11-02.md)
+- [x] 正在检查、转换或发布时的安全关闭交互：检查完成后自动关闭、发布安全取消、清理会话凭据；[验证记录](VALIDATION-CLOSE-WHILE-RUNNING-2026-11-02.md)
 - [x] 目录字段映射导出机制
 - [x] Windows 开发环境中的原生 GDAL、中文路径及桌面预检验证（见 Windows 报告）
 - [x] Windows 内部便携预览及桌面快捷方式（含受控 GDAL、原生桌面/CRS 验证）

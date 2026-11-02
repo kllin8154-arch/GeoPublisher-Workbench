@@ -32,6 +32,7 @@
 - [x] 本次多 TIFF 改动的 Windows 原生增量验收与双平台 CI（见 Windows 报告第 8 节）
 - [x] GDB→SHP 受控 GDAL 离线转换原型，按图层预检/选择、短字段映射与 CSV、失败隔离，已有真实本地测试 GDB 证据
 - [x] MXD→SHP/LYR 的 ArcMap 10.x 离线辅助脚本与纯模拟调用测试；LYR→SLD 经 QGIS 插件导出后同名批量配对
+- [x] GDB 字段对照与 SLD 的简单字段引用显式映射，逐文件哈希和计划副本留痕，复杂表达式拒绝自动修复
 - [ ] 在真正 ArcMap/QGIS 离线环境验证真实 MXD/LYR 转换和 SLD 实图一致性
 - [ ] SFTP/共享目录的大文件传输
 - [ ] 已知 ImagePyramid 目录兼容

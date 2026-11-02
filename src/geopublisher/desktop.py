@@ -432,6 +432,12 @@ class MainWindow(QMainWindow):
         self.sld_directory = QLineEdit()
         self.sld_directory.setPlaceholderText("QGIS 插件批量导出的 SLD 所在文件夹；需与 SHP/TIFF 同名")
         advanced_form.addRow("批量 SLD 目录", self._path_row(self.sld_directory, self._choose_sld_directory))
+        self.remap_sld_fields = QCheckBox("我已核对字段对照：修复 SLD 中的原字段名（仅 GDB 导出的 SHP）")
+        self.remap_sld_fields.setToolTip(
+            "必须在 SHP 同目录提供 conversion-report.json。逐一校验 SHP、DBF、SHX、PRJ、CPG 的 SHA256；"
+            "只改本次计划的 SLD 副本，不修改 QGIS 导出的原 SLD。复杂表达式会阻断。"
+        )
+        advanced_form.addRow("", self.remap_sld_fields)
         self.encoding = QComboBox()
         self.encoding.addItem("自动读取 .cpg", None)
         self.encoding.addItem("UTF-8", "UTF-8")
@@ -465,6 +471,7 @@ class MainWindow(QMainWindow):
         self._editable.extend(
             (
                 self.encoding,
+                self.remap_sld_fields,
                 self.crs,
                 self.target_name,
                 self.strategy,
@@ -478,6 +485,7 @@ class MainWindow(QMainWindow):
         self.encoding.currentIndexChanged.connect(self._invalidate_plan)
         self.strategy.currentIndexChanged.connect(self._invalidate_plan)
         self.wfs.toggled.connect(self._invalidate_plan)
+        self.remap_sld_fields.toggled.connect(self._invalidate_plan)
         self.independent_tiffs.toggled.connect(self._invalidate_plan)
         return page
 
@@ -1160,6 +1168,7 @@ class MainWindow(QMainWindow):
             "declared_crs": self.crs.text().strip() or None,
             "sld": self.style_path.text().strip() or None,
             "sld_directory": self.sld_directory.text().strip() or None,
+            "remap_sld_fields": self.remap_sld_fields.isChecked(),
             "target_name": self.target_name.text().strip() or None,
             "enable_wfs": self.wfs.isChecked(),
             "raster_mode": "independent" if self.independent_tiffs.isChecked() else None,
@@ -1207,6 +1216,13 @@ class MainWindow(QMainWindow):
                 item.setToolTip(str(value))
                 self.resources_table.setItem(row, column, item)
             details.append(f"{resource['target_name']}：{state}")
+            rewritten = resource.get("sld_field_rewrite")
+            if isinstance(rewritten, dict):
+                changes = rewritten.get("changes", [])
+                details.append(f"  字段对照已明确启用：{len(changes)} 个 SLD 字段引用被修正")
+                for change in changes:
+                    details.append(f"    {change['original']} → {change['shp_field']}")
+                details.append("  请用真实 WMS 对照分类、标注及图例；字段匹配成功不等于样式还原。")
             for label, issues in (("阻断", errors), ("提示", warnings)):
                 for issue in issues:
                     message = (

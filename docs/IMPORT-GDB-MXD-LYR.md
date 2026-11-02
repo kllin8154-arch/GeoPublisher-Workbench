@@ -61,13 +61,13 @@ python arcmap_mxd_to_shp.py "D:\LocalGIS\project.mxd" "D:\LocalGIS\mxd-export-ne
 
 ### 合成 MXD 验证
 
-本机**没有可用 ArcMap/ArcPy**，因此当前无法凭空生成真实的二进制 MXD，也不能把重命名的 JSON 或模拟文件作为测试成功。工作台另外提供 `arcmap_create_synthetic_mxd.py`；它在真正装有 ArcMap 10.x 的离线机器上，使用**有效的空白 MXD 模板**创建数学点/线/面 SHP 并保存真实 MXD：
+**2026-11-02 已在本机 ArcGIS Desktop 10.8 / ArcPy 2.7 环境真实生成二进制 MXD，完成 MXD→3 SHP + 3 LYR 的本地转换。** 旧版说明中“本机未安装 ArcMap”的判断已过时。工作台提供 `arcmap_create_synthetic_mxd.py`，用真实 ArcMap 10.x 的空白 MXD 模板创建数学点/线/面 SHP，并保存有效的 MXD；不会伪造二进制格式：
 
 ```powershell
 python arcmap_create_synthetic_mxd.py "D:\ArcMap\blank.mxd" "D:\LocalGIS\synthetic-mxd-new"
 ```
 
-新目录须不存在。源代码已通过模拟 ArcPy 调用路径测试；**真实 ArcMap 二进制的端到端验证仍未完成**。
+新目录须不存在。源代码的模拟调用测试与 ArcMap 10.8 的真实二进制生成、重新打开并导出 3 个 SHP/LYR 均已通过；**真实地质图 MXD 的复杂符号、标注和最终 GeoServer WMS 视觉一致性仍未验收**。
 
 ## LYR → SLD（复用 QGIS Style Assistant 0.4.0）
 
@@ -84,5 +84,22 @@ python arcmap_create_synthetic_mxd.py "D:\ArcMap\blank.mxd" "D:\LocalGIS\synthet
 
 - 已用 GDAL 3.13.3 对**用户指定的本机测试 FileGDB**进行实际元数据读取和批量 SHP 导出；全部数据及字段对照只留在 D 盘，不提交仓库，也不上传公网。
 - 已有真实 SHP 成功产物；个别源数据 OpenFileGDB 索引读取异常被明确记录，没有采用忽略错误继续转换的策略。
-- MXD/LYR 的模拟调用与辅助脚本可测试，但本机未安装 ArcMap/QGIS，因此**真实 ArcMap MXD → QGIS LYR → SLD 的最终集成需要具备这些软件的离线环境**。
+- 本机 ArcMap 10.8 + ArcPy 2.7、QGIS 4.2.1 + SLYR Community + Style Assistant 0.4.0 已通过**真实合成 MXD→SHP/LYR→QML/SLD 的离线转换**：3 个几何图层全部成功，导出 SLD 均通过 GeoPublisher 的字段、外部资源和符号类型校验。中文及空格路径成功，18 个源文件转换前后 SHA256 一致。此验证**不是**复杂地质样式视觉保真或 GeoServer 服务端 WMS 发布验收。
 - 生成的 SHP 尚未自动发布到生产 GeoServer；现有 GeoPublisher 的正式发布功能仍需由授权人员按环境确认后执行。
+
+
+## QGIS LYR→SLD 批量离线脚本（2026-11-02 新增）
+
+在工作台 **发布任务 → GDB / MXD / LYR 转换 → 导出 QGIS LYR→SLD 批量离线转换脚本**，将 `qgis_lyr_to_sld.py` 保存到本机 D 盘。该操作只导出脚本，不安装插件、不运行 QGIS、不联网或发布服务。
+
+若已经用 ArcMap 辅助脚本获得一个包含 `同名.shp`、`同名.lyr`、`.shx`、`.dbf`、`.prj`、`.cpg` 的文件夹，就能调用已安装的 QGIS Python 运行时批量处理。下面是**本机已验证的 QGIS 安装路径示例**，换机时以该机实际安装位置为准：
+
+```powershell
+& "D:\QGIS\bin\python-qgis.bat" "D:\LocalGIS\qgis_lyr_to_sld.py" "D:\LocalGIS\mxd-export-new" "D:\LocalGIS\sld-export-new"
+```
+
+需要安装 QGIS Style Assistant 和 SLYR Community。脚本默认读取当前用户、当前 QGIS 主版本的默认 profile 插件目录，必要时可显式传入 `--plugin-parent "插件父目录"`；QGIS 安装无法识别时可传入 `--qgis-prefix "QGIS 应用目录"`。工具**不会从 PATH 隐式调用其他 Python 或 ArcPy**。
+
+脚本逐个读取同名 SHP/LYR、应用原 ArcMap LYR 样式、输出 QML 与 SLD，并创建 `lyr-conversion-report.json`。失败的中间文件留在新输出目录 `artifacts/` 中，不作为成功 SLD。返回值：0 代表本次全部导出；1 代表部分图层失败；2 代表来源、环境或路径前置条件被阻断。源文件不写入，输出目录须全新、且不能位于输入目录内部。
+
+**继续发布：** 在工作台添加刚才的 SHP 文件，展开高级选项，在“批量 SLD 目录”中选择 `sld-export-new`，再次执行本地预检。成功导出 QML/SLD、字段及几何类型检查通过后，仍需人工确认分类色值、线型、标注和最终 GeoServer WMS 效果；绝不自动将“转换成功”判定为“视觉无损”。

@@ -903,3 +903,25 @@ def test_closing_during_publish_requests_cancel_and_auto_closes(window, app, mon
     assert window._close_when_idle
     wait_until(app, lambda: window._thread is None and not window.isVisible(), timeout=10)
     assert window.session_password.text() == ""
+
+
+
+def test_qgis_helper_button_exports_local_script_without_running_qgis(window, tmp_path, monkeypatch):
+    """A user can obtain the real offline QGIS helper, but nothing runs implicitly."""
+    from geopublisher.arcgis_bridge import qgis_helper_bytes
+
+    target = tmp_path / "qgis_lyr_to_sld.py"
+    events = []
+    monkeypatch.setattr(
+        desktop.QFileDialog, "getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), "Python script (*.py)"),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: events.append("saved"))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: events.append("blocked"))
+
+    window._export_qgis_helper()
+    assert target.read_bytes() == qgis_helper_bytes()
+    assert events == ["saved"]
+    window._export_qgis_helper()
+    assert events == ["saved", "blocked"]
+    assert target.read_bytes() == qgis_helper_bytes()

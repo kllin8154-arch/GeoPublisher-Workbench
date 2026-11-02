@@ -84,3 +84,16 @@ Windows 使用系统中的微软雅黑等中文字体。Linux 桌面还需事先
 GeoServer 发布过程中点击关闭，会询问是否请求安全取消，并在任务停止后自动关闭。安全取消只在检查点生效：正在等待的网络请求可能需要等到受控超时，服务端写入结果不确定时仍要在任务历史/日志中进行人工核对。**不要通过任务管理器强制结束程序来代替安全取消。**
 
 已经选择“任务结束后自动关闭”时，成功/失败回调不再打开额外确认框；窗口关闭前清除内存会话凭据。窗口关闭不意味着任务已经成功发布。详见 [专项验证记录](VALIDATION-CLOSE-WHILE-RUNNING-2026-11-02.md)。
+
+
+## LYR 样式的批量转换
+
+在 **发布任务 → GDB / MXD / LYR 转换** 对话框里选择 **导出 QGIS LYR→SLD 批量离线转换脚本**，得到 `qgis_lyr_to_sld.py`。把同名的 SHP 与 ArcMap LYR 保存在同一个本地文件夹，且 SHP 的 SHX、DBF、PRJ、CPG 组件齐全；使用**本机 QGIS 自带的 Python 启动器**（不是系统 Python）：
+
+```powershell
+& "D:\QGIS\bin\python-qgis.bat" "D:\LocalGIS\qgis_lyr_to_sld.py" "D:\LocalGIS\mxd-export" "D:\LocalGIS\sld-new"
+```
+
+这只是本机的安装路径示例。脚本依赖用户自行安装的 QGIS Style Assistant 和 SLYR Community；输出全新目录内含按原 SHP 文件名命名的 QML、SLD 及 `lyr-conversion-report.json`，失败中间文件单独保留。完成后在工作台高级选项中选中**批量 SLD 目录**再预检。脚本不发送数据、不覆盖来源、不自动执行 GeoServer 发布。
+
+已在 ArcMap 10.8 + QGIS 4.2.1 的真实合成点线面样本中成功导出 3 份样式，中文路径及 SHA256 原文件不变测试通过；更复杂的地质分类、字体标注及 WMS 视觉一致性仍需人工核对。详细条件和限制见 [GDB/MXD/LYR 离线转换说明](IMPORT-GDB-MXD-LYR.md)。

@@ -893,12 +893,12 @@ class MainWindow(QMainWindow):
     def _arcgis_conversion(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("GIS 数据与样式离线转换")
-        dialog.resize(650, 410)
+        dialog.resize(650, 470)
         layout = QVBoxLayout(dialog)
         hint = QLabel(
             "① GDB → SHP：使用受控 GDAL 在本机批量导出要素类，原始 GDB 不变，附字段映射报告。"
             "\n② MXD → SHP + LYR：在装有 ArcMap 10.x 的离线电脑运行辅助脚本；MXD 不能单独还原数据。"
-            "\n③ LYR → SLD：在 QGIS Style Assistant 0.4.0 套用样式并导出，再按 SHP 名称批量匹配。"
+            "\n③ LYR → SLD：导出 QGIS 批量离线脚本，或通过 Style Assistant 手动导出，再按 SHP 名称批量匹配。"
             "\n\n注记层、长字段、中文字段和复杂符号都需要核对；转换成功不等于样式无损。"
         )
         hint.setWordWrap(True)
@@ -916,6 +916,9 @@ class MainWindow(QMainWindow):
         demo_button = QPushButton("导出 ArcMap 合成 MXD 测试样本生成脚本")
         demo_button.clicked.connect(self._export_arcmap_demo_helper)
         layout.addWidget(demo_button)
+        qgis_button = QPushButton("导出 QGIS LYR→SLD 批量离线转换脚本")
+        qgis_button.clicked.connect(self._export_qgis_helper)
+        layout.addWidget(qgis_button)
         folder_button = QPushButton("选择 QGIS 导出的 SLD 文件夹")
         folder_button.clicked.connect(lambda: (self._choose_sld_directory(), dialog.accept()))
         layout.addWidget(folder_button)
@@ -943,10 +946,37 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "合成 MXD 脚本已导出",
             f"脚本：{path}\n"
-            "本机没有 ArcMap，不能伪造一个有效的 MXD 二进制文件。\n"
+            "普通 Python 无法伪造有效的 MXD 二进制文件，需使用真正的 ArcMap 10.x / ArcPy。\n"
             "需在真正安装 ArcMap 10.x 的离线电脑准备空白 MXD 模板后执行：\n"
             'python arcmap_create_synthetic_mxd.py "空白模板.mxd" "全新输出目录"\n'
             "脚本只创建数学点、线、面和真实 MXD 副本，不访问地质业务数据。",
+        )
+
+    def _export_qgis_helper(self) -> None:
+        """Export a QGIS-native, fully offline LYR to SLD batch converter."""
+        from .arcgis_bridge import save_qgis_helper
+
+        target, _filter = QFileDialog.getSaveFileName(
+            self,
+            "导出 QGIS LYR→SLD 离线批量脚本",
+            str(self._work_dir.parent / "qgis_lyr_to_sld.py"),
+            "Python 脚本 (*.py)",
+        )
+        if not target:
+            return
+        try:
+            path = save_qgis_helper(target)
+        except (ConfigError, OSError) as exc:
+            QMessageBox.warning(self, "QGIS 脚本未导出", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "QGIS 离线脚本已导出",
+            f"脚本已保存：{path}\n"
+            "请用 QGIS 自带的 python-qgis.bat 执行，而不是普通 Python。\n"
+            '用法：python-qgis.bat qgis_lyr_to_sld.py "同名 SHP/LYR 目录" "全新样式输出目录"\n'
+            "需要先在本机 QGIS 安装 Style Assistant 0.4.0 和 SLYR Community。\n"
+            "所有转换、报告仅保存在本地，不覆盖原文件，也不自动发布到 GeoServer。",
         )
 
     def _choose_gdb_and_export(self, include_annotations: bool = False) -> None:

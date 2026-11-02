@@ -53,9 +53,8 @@ def resolve_sld_directory(source_paths: list[Path], directory: Path | str) -> di
     return mapped
 
 
-def arcmap_helper_bytes(*, demo: bool = False) -> bytes:
-    """Load ArcMap 10.x helper code; none of these scripts runs in GeoPublisher."""
-    filename = "arcmap_create_synthetic_mxd.py" if demo else "arcmap_mxd_to_shp.py"
+def _helper_bytes(filename: str) -> bytes:
+    """Load a bundled offline helper without invoking GIS runtimes."""
     if getattr(sys, "frozen", False):
         root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
         path = root / "geopublisher" / "resources" / filename
@@ -64,11 +63,21 @@ def arcmap_helper_bytes(*, demo: bool = False) -> bytes:
     try:
         return resources.files("geopublisher").joinpath("resources", filename).read_bytes()
     except (OSError, FileNotFoundError, ModuleNotFoundError):
-        raise ConfigError("ARCMAP_HELPER_MISSING", "打包中缺少 MXD 离线脚本，请检查程序完整性。") from None
+        raise ConfigError("ARCMAP_HELPER_MISSING", "打包中缺少离线转换辅助脚本，请检查程序完整性。") from None
 
 
-def save_arcmap_helper(destination: Path | str, *, demo: bool = False) -> Path:
-    """Export an ArcMap helper, never invoke ArcPy within GeoPublisher."""
+def arcmap_helper_bytes(*, demo: bool = False) -> bytes:
+    """Load ArcMap 10.x helper code without invoking ArcPy."""
+    return _helper_bytes("arcmap_create_synthetic_mxd.py" if demo else "arcmap_mxd_to_shp.py")
+
+
+def qgis_helper_bytes() -> bytes:
+    """Load the offline QGIS LYR batch helper without invoking QGIS."""
+    return _helper_bytes("qgis_lyr_to_sld.py")
+
+
+def _save_helper(destination: Path | str, contents: bytes) -> Path:
+    """Export a bundled helper to a fresh file; refuse symlinks or overwrites."""
     target = Path(destination).expanduser().absolute()
     if target.suffix.casefold() != ".py":
         raise ConfigError("ARCMAP_HELPER_SUFFIX", "请保存为 .py 脚本。")
@@ -77,10 +86,20 @@ def save_arcmap_helper(destination: Path | str, *, demo: bool = False) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with target.open("xb") as stream:
-            stream.write(arcmap_helper_bytes(demo=demo))
+            stream.write(contents)
     except FileExistsError:
         raise ConfigError("ARCMAP_HELPER_EXISTS", "目标脚本已经存在，拒绝覆盖。") from None
     return target
+
+
+def save_arcmap_helper(destination: Path | str, *, demo: bool = False) -> Path:
+    """Export an ArcMap helper, never invoke ArcPy within GeoPublisher."""
+    return _save_helper(destination, arcmap_helper_bytes(demo=demo))
+
+
+def save_qgis_helper(destination: Path | str) -> Path:
+    """Export a QGIS offline LYR batch helper without invoking PyQGIS."""
+    return _save_helper(destination, qgis_helper_bytes())
 
 
 def arcmap_helper_compatible() -> bool:

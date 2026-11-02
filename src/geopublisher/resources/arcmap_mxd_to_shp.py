@@ -10,6 +10,7 @@ from __future__ import print_function
 import argparse
 import io
 import json
+import locale
 import os
 import re
 import sys
@@ -27,6 +28,16 @@ def as_text(value):
         return value.decode("utf-8", "replace")
     except AttributeError:
         return text_type(value)
+
+
+def print_status(value):
+    """Keep ArcMap Python 2.7 alive when stdout is redirected without an encoding."""
+    message = as_text(value)
+    if sys.version_info[0] < 3:
+        encoding = getattr(sys.stdout, "encoding", None) or locale.getpreferredencoding(False) or "utf-8"
+        sys.stdout.write(message.encode(encoding, "replace") + b"\n")
+    else:
+        print(message)
 
 
 def safe_filename(value):
@@ -141,10 +152,10 @@ def main(argv=None):
     try:
         report = export_mxd(args.mxd, args.output, allow_filtered=args.allow_filtered)
     except ValueError as error:
-        print(as_text(error))
+        print_status(error)
         return 2
     exported = sum(row["status"] in ("EXPORTED", "SHP_EXPORTED_LYR_FAILED") for row in report["items"])
-    print(u"完成：SHP {0} 个，清单在新输出目录。".format(exported))
+    print_status(u"完成：SHP {0} 个，清单在新输出目录。".format(exported))
     return 0 if exported else 1
 
 

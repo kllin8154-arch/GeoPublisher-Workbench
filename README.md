@@ -17,7 +17,7 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 能力 | 当前行为 |
 |---|---|
 | 数据输入 | 单个或批量 SHP、独立 GeoTIFF；多个 TIFF 需要明确确认分别发布，已知 Mosaic/Pyramid 结构及辅助索引阻断；源文件保持不变 |
-| 本地格式转换 | **GDB→SHP**：只读预检、按要素类选择、稳定的 DBF 短字段名、CSV 字段对照、失败残留隔离；**MXD**：导出 ArcMap 10.x 本地辅助脚本及真实合成 MXD 生成脚本；**LYR**：配合 QGIS 插件导出 SLD，再按同名图层精确匹配 |
+| 本地格式转换 | **GDB→SHP**：只读预检、按要素类选择、稳定的 DBF 短字段名、CSV 字段对照、失败残留隔离；**MXD**：导出 ArcMap 10.x 本地辅助脚本及真实合成 MXD 生成脚本；**LYR**：可导出 QGIS 离线批量脚本，使用本机 Style Assistant + SLYR 将同名 LYR/SHP 转为 QML/SLD，再精确匹配 |
 | 本地预检 | SHP 组件、编码、CRS、字段、范围；TIFF CRS、波段和外部依赖；首版发布要求可验证的 EPSG；明确指定受控 GDAL |
 | 样式 | 默认点/线/面/栅格 SLD，或最多 5 MiB 的已有 SLD；检查字段引用并拒绝外部资源；GDB 转 SHP 的短字段名可在用户显式确认、转换报告与配套 SHP 哈希一致后仅修复简单 SLD 字段引用 |
 | 发布策略 | 同名停止、明确跳过、任务固定名称的新版本；不提供原位替换 |
@@ -27,7 +27,7 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 目录接入 | 导出绑定清单；人工核验字段映射后生成 PostgreSQL SQL；不连接业务数据库 |
 | 桌面界面 | 数据选择、环境设置、预检、一次任务级确认、后台执行、检查点取消、真实地图、历史及恢复 |
 
-已在隔离 GeoServer 2.24.4 上以**纯数学合成多边形**完成 GDB→SHP→短字段映射→SLD 的真实只读 WMS 颜色验证；见 [分类样式实测](docs/VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)。此测试采用停机准备的专用 catalog，不代表正式 REST 发布或真实 LYR/MXD 视觉保真。当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
+已在隔离 GeoServer 2.24.4 上以**纯数学合成多边形**完成 GDB→SHP→短字段映射→SLD 的真实只读 WMS 颜色验证；见 [分类样式实测](docs/VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)。此测试采用停机准备的专用 catalog，不代表正式 REST 发布或真实 LYR/MXD 视觉保真。另已在 ArcMap 10.8 / QGIS 4.2.1 上完成真实合成 MXD→SHP/LYR→QML/SLD 离线转换及中文路径检查；详见 [本机验收](docs/VALIDATION-ARCMAP-QGIS-2026-11-02.md)。当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
 
 ## Windows 开发环境
 

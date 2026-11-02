@@ -231,3 +231,22 @@ def test_synthetic_mxd_generator_helper_does_not_fake_mxd_without_arcpy(tmp_path
     assert template.read_bytes() == b"synthetic test-only template placeholder"
     # This test verifies the ArcPy call sequence, not binary MXD validity.
     assert (tmp_path / "actual" / "synthetic_map.mxd").read_bytes() == b"FAKE-MXD-ONLY-FROM-MOCK"
+
+
+
+def test_arcmap_python27_chinese_stdout_survives_redirect(tmp_path, monkeypatch):
+    """ArcMap Python 2 stdout has no encoding under PowerShell redirection."""
+    script = save_arcmap_helper(tmp_path / "arcmap_real.py")
+    spec = importlib.util.spec_from_file_location("arcmap_py2_console", script)
+    assert spec and spec.loader
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    output: list[bytes] = []
+    fake_stdout = SimpleNamespace(encoding=None, write=output.append)
+    fake_sys = SimpleNamespace(version_info=(2, 7, 16), stdout=fake_stdout)
+    monkeypatch.setattr(helper, "sys", fake_sys)
+    monkeypatch.setattr(helper.locale, "getpreferredencoding", lambda *_: "cp936")
+
+    helper.print_status("完成：SHP 3 个，清单在新输出目录。")
+    assert b"".join(output).decode("cp936").strip() == "完成：SHP 3 个，清单在新输出目录。"

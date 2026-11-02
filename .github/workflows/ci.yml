@@ -37,8 +37,12 @@ jobs:
         run: uv sync --frozen --extra dev --extra desktop --extra packaging
       - name: Lint
         run: uv run --frozen --no-sync ruff check .
-      - name: Tests
-        run: uv run --frozen --no-sync pytest -q -ra
+      - name: Qt background worker lifecycle
+        timeout-minutes: 3
+        run: uv run --frozen --no-sync pytest -q -ra -o faulthandler_timeout=15 tests/test_desktop.py
+      - name: Full test suite with thread diagnostics
+        timeout-minutes: 6
+        run: uv run --frozen --no-sync pytest -q -ra -o faulthandler_timeout=20
       - name: Build Python wheel
         run: uv run --frozen --no-sync python -m build --no-isolation
       - name: Build Windows desktop preview

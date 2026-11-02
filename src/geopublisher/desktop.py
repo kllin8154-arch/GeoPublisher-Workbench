@@ -1327,11 +1327,17 @@ class MainWindow(QMainWindow):
         self._thread = QThread(self)
         self._worker = _Worker(operation)
         self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
+        # Queue work only after QThread's event loop is processing events.
+        # Running directly from 'started' can complete before exec() begins;
+        # a fast worker's queued quit may then race with thread startup.
+        self._thread.started.connect(self._worker.run, Qt.ConnectionType.QueuedConnection)
         self._worker.completed.connect(self._worker_completed)
         self._worker.failed.connect(self._worker_failed)
         self._worker.event.connect(self._receive_event)
-        self._worker.finished.connect(self._thread.quit)
+        # QThread.quit() is documented thread-safe. Call it directly from the
+        # worker's finished signal, so exiting the worker loop never depends
+        # on a queued callback being serviced by the GUI event loop.
+        self._worker.finished.connect(self._thread.quit, Qt.ConnectionType.DirectConnection)
         self._worker.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread_finished)
         self._thread.finished.connect(self._thread.deleteLater)

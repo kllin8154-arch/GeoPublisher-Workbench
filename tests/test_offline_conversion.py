@@ -205,3 +205,55 @@ def test_offline_cancel_during_worker_writes_checkpoint_without_forced_terminati
     )
     assert result["status"] == "CANCELLED"
     assert (Path(result["job"]) / "cancel.request").is_file()
+
+
+
+def test_progress_emits_once_per_new_layer_not_for_unrelated_log_lines(tmp_path, monkeypatch):
+    """Slow conversions must not flood the GUI with duplicate progress events."""
+    source = tmp_path / "synthetic.mxd"
+    source.write_bytes(b"synthetic")
+    exe = fake_arcmap_runtime(tmp_path)
+    monkeypatch.setattr(
+        workflow, "local_python_environment",
+        lambda *_args: (exe, {"PATH": str(exe.parent), "PROJ_NETWORK": "OFF"}),
+    )
+
+    class SlowProcess:
+        def __init__(self, command, **kwargs):
+            self.log = kwargs["stdout"]
+            self.checks = 0
+            self.returncode = None
+            destination = Path(command[3])
+            destination.mkdir()
+            (destination / "mxd-export-manifest.json").write_text(
+                json.dumps({"items": [
+                    {"source_layer": "point", "status": "EXPORTED"},
+                    {"source_layer": "line", "status": "EXPORTED"},
+                ]}), encoding="utf-8",
+            )
+
+        def poll(self):
+            self.checks += 1
+            if self.checks == 1:
+                self.log.write(b"STYLE_EXPORTED=layer\n")
+                self.log.flush()
+                return None
+            if self.checks == 2:
+                self.log.write(b"Unrelated ArcPy internal message\n")
+                self.log.flush()
+                return None
+            if self.checks == 3:
+                self.log.write(b"STYLE_EXPORTED=layer\n")
+                self.log.flush()
+                return None
+            self.returncode = 0
+            return 0
+
+    monkeypatch.setattr(workflow.subprocess, "Popen", SlowProcess)
+    events = []
+    result = workflow.run_offline_conversion(
+        "mxd", source, exe, tmp_path / "jobs", on_event=events.append,
+    )
+    assert result["status"] == "SUCCEEDED"
+    progress = [event["text"] for event in events if "已处理" in event["text"]]
+    assert progress == ["已处理 1 个图层。", "已处理 2 个图层。"]

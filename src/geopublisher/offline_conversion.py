@@ -156,12 +156,16 @@ def run_offline_conversion(kind: str, source: Path | str, executable: Path | str
             if data:
                 complete = (pending_line + data).split(b"\n")
                 pending_line = complete.pop()[-1024:]
+                before = last_lines
                 for line in complete:
                     if line.strip().startswith(
-                        (b"STYLE_EXPORTED=", b"STYLE_FAILED=", b"STYLE_CANCELLED=")
+                        (
+                            b"STYLE_EXPORTED=", b"STYLE_FAILED=", b"STYLE_CANCELLED=",
+                            b"STYLE_SKIPPED=", b"STYLE_SHP_EXPORTED_LYR_FAILED=",
+                        )
                     ):
                         last_lines += 1
-                if last_lines:
+                if last_lines > before:
                     notify({"text": f"已处理 {last_lines} 个图层。"})
             time.sleep(0.15)
         return_code = process.returncode

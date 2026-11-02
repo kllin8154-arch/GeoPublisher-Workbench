@@ -819,3 +819,87 @@ def test_repeated_background_worker_failure_does_not_leave_busy_state(window, ap
         assert window.inspect_button.isEnabled()
         assert window.settings_nav.isEnabled()
     assert not window._work_dir.exists()
+
+
+@pytest.mark.parametrize("fail_operation", [False, True])
+def test_close_during_readonly_worker_waits_then_auto_closes(window, app, monkeypatch, fail_operation):
+    """Closing a read-only task waits for its thread and never opens a late dialog."""
+    gate = threading.Event()
+    started = threading.Event()
+    callbacks = []
+    warnings = []
+    window.show()
+    window.session_password.setText("synthetic-session-secret")
+    window._pending_gdb_conversion = (object(), Path("synthetic.gdb"), False, ["demo"])
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_a, **_k: warnings.append("warning"))
+    monkeypatch.setattr(window, "_begin_gdb_conversion", lambda *_a: pytest.fail("unwanted conversion"))
+
+    def work(_on_event):
+        started.set()
+        assert gate.wait(10), "Synthetic worker was not released."
+        if fail_operation:
+            raise DatasetError("SYNTHETIC_ERROR", "Local inspection error")
+        return {"status": "ready"}
+
+    window._start_worker(work, lambda result: callbacks.append(result))
+    try:
+        wait_until(app, started.is_set)
+        window.close()
+        assert window.isVisible()  # Never destroy an active QThread.
+        assert window._thread is not None
+        assert window._close_when_idle
+        assert window._pending_gdb_conversion is None
+    finally:
+        gate.set()
+        wait_until(app, lambda: window._thread is None and not window.isVisible(), timeout=10)
+    assert callbacks == []
+    assert warnings == []
+    assert window.session_password.text() == ""
+
+
+def test_declining_close_does_not_interrupt_running_worker(window, app, monkeypatch):
+    gate = threading.Event()
+    started = threading.Event()
+    window.show()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.No)
+
+    def work(_on_event):
+        started.set()
+        assert gate.wait(10)
+        return {"status": "checked"}
+
+    window._start_worker(work, lambda _: None)
+    try:
+        wait_until(app, started.is_set)
+        window.close()
+        assert window.isVisible()
+        assert window._thread is not None
+        assert not window._close_when_idle
+    finally:
+        gate.set()
+        wait_until(app, lambda: window._thread is None, timeout=10)
+    assert window.isVisible()
+    window.close()
+
+
+def test_closing_during_publish_requests_cancel_and_auto_closes(window, app, monkeypatch):
+    started = threading.Event()
+    window.show()
+    window._set_step(2)
+    window.session_password.setText("synthetic-secret")
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes)
+
+    def work(_on_event):
+        started.set()
+        assert window._cancel.wait(10), "Publish cancel request never arrived."
+        return {"status": "CANCELLED"}
+
+    window._start_worker(work, window.show_result)
+    wait_until(app, started.is_set)
+    window.close()
+    assert window._cancel.is_set()
+    assert window.isVisible()
+    assert window._close_when_idle
+    wait_until(app, lambda: window._thread is None and not window.isVisible(), timeout=10)
+    assert window.session_password.text() == ""

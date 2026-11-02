@@ -598,3 +598,156 @@ def test_server_connected_without_gdal_explains_remaining_local_requirement(wind
     })
     assert "连接成功" in window.connection_status.text()
     assert "还需选择完整的受控 GDAL" in window.connection_status.text()
+
+
+def test_convert_gdb_cli_parameters_are_explicit_and_offline():
+    from geopublisher.cli import parser
+
+    args = parser().parse_args([
+        "convert-gdb", "D:/local/test.gdb", "--output", "D:/out/new",
+        "--gdal-bin", "D:/runtime/Library/bin", "--preview",
+    ])
+    assert args.command == "convert-gdb"
+    assert args.preview is True
+    assert not args.include_annotation_bounds
+    assert args.layer is None
+
+
+def test_gdb_preview_summary_explains_field_risks_without_automatic_export():
+    info = {
+        "feature_count": 105,
+        "layers": [
+            {"name": "A", "feature_count": 100, "crs": "EPSG:4508", "annotation": False,
+             "field_map": [{"renamed": True, "omitted": False}], "warnings": []},
+            {"name": "A_NOTE", "feature_count": 5, "crs": "EPSG:4508", "annotation": True,
+             "field_map": [{"renamed": False, "omitted": True}], "warnings": []},
+            {"name": "EMPTY", "feature_count": 0, "crs": "EPSG:4508", "annotation": False,
+             "field_map": [], "warnings": []},
+        ],
+    }
+    text = desktop.gdb_preview_summary(info)
+    assert "3 个要素类" in text
+    assert "105 条要素" in text
+    assert "默认计划导出 1 个" in text
+    assert "可能需要改短名 1 处" in text
+    assert "可能省略 1 处" in text
+    assert "默认计划导出 2 个" in desktop.gdb_preview_summary(info, include_annotations=True)
+
+
+def test_gdb_ui_inspects_before_conversion_and_never_uses_server(
+    window, tmp_path, monkeypatch
+):
+    from geopublisher import datasets, gdb_export
+
+    source = tmp_path / "synthetic.gdb"
+    source.mkdir()
+    window.output_root.setText(str(tmp_path))
+    monkeypatch.setattr(
+        desktop.QFileDialog, "getExistingDirectory",
+        lambda *_args, **_kwargs: str(source),
+    )
+    confirm = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *_args: (confirm.append("asked"), QMessageBox.StandardButton.No)[1],
+    )
+    seen = []
+
+    class LocalRuntime:
+        def __init__(self, path, **kwargs):
+            seen.append(("GDAL_ONLY", str(path), kwargs["expected_version"]))
+
+    monkeypatch.setattr(datasets, "GdalRuntime", LocalRuntime)
+
+    def inspect(runtime, gdb):
+        assert isinstance(runtime, LocalRuntime) and gdb == source
+        seen.append(("READ_ONLY_INSPECTION", gdb.name))
+        return {"feature_count": 3, "layers": [
+            {"name": "TEST", "feature_count": 3, "crs": "EPSG:4326",
+             "geometry": "Point", "annotation": False, "field_map": [], "warnings": []}
+        ]}
+
+    monkeypatch.setattr(gdb_export, "inspect_gdb", inspect)
+    monkeypatch.setattr(window, "_select_gdb_layers", lambda info, annotate: ["TEST"])
+
+    def convert(runtime, gdb, output, *, include_annotations, only_layers):
+        assert isinstance(runtime, LocalRuntime)
+        assert gdb == source and not include_annotations
+        assert only_layers == ["TEST"]
+        assert output.parent == tmp_path
+        output.mkdir()
+        seen.append(("CONVERT_GDB_ONLY", source.name))
+        return {
+            "destination": str(output),
+            "summary": {"EXPORTED_REVIEW_REQUIRED": 3},
+        }
+
+    monkeypatch.setattr(gdb_export, "convert_gdb", convert)
+    monkeypatch.setattr(
+        window, "_start_worker",
+        lambda operation, completed: completed(operation(lambda _event: None)),
+    )
+    window._choose_gdb_and_export()
+    assert seen[0][0] == "GDAL_ONLY"
+    assert seen[1] == ("READ_ONLY_INSPECTION", "synthetic.gdb")
+    assert seen[2] == ("CONVERT_GDB_ONLY", "synthetic.gdb")
+    assert len(confirm) == 1
+    assert "本地转换完成" in window.activity.text()
+    assert window._thread is None
+
+
+def test_gdb_ui_no_selection_does_not_create_output_or_launch_conversion(
+    window, tmp_path, monkeypatch
+):
+    from geopublisher import datasets, gdb_export
+
+    source = tmp_path / "input.gdb"
+    source.mkdir()
+    window.output_root.setText(str(tmp_path))
+    monkeypatch.setattr(
+        desktop.QFileDialog, "getExistingDirectory",
+        lambda *_args, **_kwargs: str(source),
+    )
+    monkeypatch.setattr(datasets, "GdalRuntime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        gdb_export, "inspect_gdb",
+        lambda *_args: {"layers": [], "feature_count": 0},
+    )
+    monkeypatch.setattr(window, "_select_gdb_layers", lambda *_args: [])
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(
+        window, "_start_worker",
+        lambda operation, completed: completed(operation(lambda _event: None)),
+    )
+    monkeypatch.setattr(
+        gdb_export, "convert_gdb",
+        lambda *_args, **_kwargs: pytest.fail("Must not convert without selecting layers"),
+    )
+    window._choose_gdb_and_export()
+    assert "没有勾选" in window.activity.text()
+    assert not list(tmp_path.glob("gdb-export-*"))
+
+
+def test_gdb_layer_selection_prechecks_regular_layers_and_safely_skips_annotations(
+    window, monkeypatch
+):
+    from PySide6.QtWidgets import QDialog
+
+    monkeypatch.setattr(QDialog, "exec", lambda _dialog: QDialog.DialogCode.Accepted)
+    source_info = {
+        "feature_count": 13,
+        "layers": [
+            {"name": "FAULT", "feature_count": 10, "crs": "EPSG:4508",
+             "geometry": "MultiLineString", "annotation": False,
+             "field_map": [], "warnings": []},
+            {"name": "TEXT_A", "feature_count": 3, "crs": "EPSG:4508",
+             "geometry": "MultiPolygon", "annotation": True,
+             "field_map": [], "warnings": []},
+            {"name": "EMPTY", "feature_count": 0, "crs": "EPSG:4508",
+             "geometry": "Point", "annotation": False,
+             "field_map": [], "warnings": []},
+        ],
+    }
+    assert window._select_gdb_layers(source_info, False) == ["FAULT"]
+    assert window._select_gdb_layers(source_info, True) == ["FAULT", "TEXT_A"]
+    assert "\n" in desktop.gdb_preview_summary(source_info)

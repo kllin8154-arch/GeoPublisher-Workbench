@@ -598,3 +598,44 @@ def test_plan_uses_gdal_alpha_metadata_for_default_raster_style(inputs, monkeypa
     style = Path(plan["resources"][0]["style"]["path"]).read_text(encoding="utf-8")
     assert "RasterSymbolizer" in style
     assert "ChannelSelection" not in style
+
+
+def test_qgis_exported_sld_directory_is_frozen_into_one_dataset_plan(inputs, tmp_path):
+    folder = tmp_path / "qgis-exports"
+    folder.mkdir()
+    sld = folder / "synthetic.sld"
+    sld.write_text(
+        '<StyledLayerDescriptor xmlns="http://www.opengis.net/sld" version="1.0.0">'
+        "<NamedLayer><Name>synthetic</Name><UserStyle><FeatureTypeStyle><Rule>"
+        "<RasterSymbolizer><Opacity>1.0</Opacity></RasterSymbolizer>"
+        "</Rule></FeatureTypeStyle></UserStyle></NamedLayer></StyledLayerDescriptor>",
+        encoding="utf-8",
+    )
+    plan = build_plan(
+        inputs.environment, [inputs.source], inputs.output,
+        sld_directory=folder, task_id=TASK_ID,
+    )
+    assert plan["ready"]
+    resource = plan["resources"][0]
+    assert Path(resource["style"]["path"]).read_bytes() == sld.read_bytes()
+    assert resource["style"]["sha256"] == digest_file(sld)
+    assert Path(resource["artifact"]["path"]).is_file()
+
+
+def test_batch_sld_missing_or_conflicting_styles_abort_before_creating_plan(inputs, tmp_path):
+    folder = tmp_path / "qgis-bundle"
+    folder.mkdir()
+    bad_target = tmp_path / "must-not-be-created"
+    with pytest.raises(ConfigError) as missing:
+        build_plan(inputs.environment, [inputs.source], bad_target, sld_directory=folder)
+    assert missing.value.code == "SLD_NOT_FOUND"
+    assert not bad_target.exists()
+    sld = folder / "synthetic.sld"
+    sld.write_text("<StyledLayerDescriptor/>", encoding="utf-8")
+    with pytest.raises(ConfigError) as conflicting:
+        build_plan(
+            inputs.environment, [inputs.source], bad_target,
+            sld_directory=folder, sld=sld,
+        )
+    assert conflicting.value.code == "SLD_MODE_CONFLICT"
+    assert not bad_target.exists()

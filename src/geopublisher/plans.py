@@ -53,11 +53,13 @@ def build_plan(
     encoding: str | None = None,
     declared_crs: str | None = None,
     sld: Path | str | None = None,
+    sld_directory: Path | str | None = None,
     target_name: str | None = None,
     enable_wfs: bool = False,
     raster_mode: str | None = None,
     task_id: str | None = None,
 ) -> dict:
+    from .arcgis_bridge import resolve_sld_directory
     from .datasets import GdalRuntime, package_dataset
     from .imports import prepare_imports, verify_import_intent
     from .styles import validate_sld, write_default_sld
@@ -86,6 +88,11 @@ def build_plan(
             "OUTPUT_INSIDE_SOURCE", "任务目录不能位于导入目录内；请选择独立的输出位置。"
         )
     paths = [Path(item["path"]) for item in import_intent["datasets"]]
+    if sld and sld_directory:
+        raise ConfigError("SLD_MODE_CONFLICT", "单个 SLD 与批量 SLD 目录不能同时使用。")
+    if sld and len(paths) != 1:
+        raise ConfigError("SLD_AMBIGUOUS", "多个数据集不能共用一个 SLD，请选择批量 SLD 目录逐图层配对。")
+    style_sources = resolve_sld_directory(paths, sld_directory) if sld_directory else {}
     if target_name and len(paths) != 1:
         raise ConfigError("AMBIGUOUS_NAME", "指定单个图层名时只能导入一个数据集。")
     runtime = GdalRuntime(
@@ -134,8 +141,9 @@ def build_plan(
             artifact = package_dataset(info, resource_dir)
             resource["artifact"] = artifact
             style_file = resource_dir / "style.sld"
-            if sld:
-                source_style = Path(sld).resolve()
+            selected_sld = style_sources.get(source.resolve()) or sld
+            if selected_sld:
+                source_style = Path(selected_sld).resolve()
                 if source_style.stat().st_size > 5 * 1024 * 1024:
                     raise ConfigError("SLD_TOO_LARGE", "SLD 超过首版允许的 5 MiB 上限。")
                 with source_style.open("rb") as stream:

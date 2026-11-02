@@ -10,6 +10,8 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $venvPython = Join-Path $repo '.venv\Scripts\python.exe'
 $pixi = Join-Path $repo '.pixi\envs\default'
 $icon = Join-Path $repo 'assets\geopublisher.ico'
+$arcmapResources = Join-Path $repo 'src\geopublisher\resources'
+if (-not (Test-Path (Join-Path $arcmapResources 'arcmap_mxd_to_shp.py')) -or -not (Test-Path (Join-Path $arcmapResources 'arcmap_create_synthetic_mxd.py'))) { throw 'Missing optional offline ArcMap helpers.' }
 $entry = Join-Path $repo 'scripts\desktop_entry.py'
 $final = Join-Path $OutputRoot 'Current'
 $buildRoot = Join-Path $OutputRoot '_build'
@@ -35,7 +37,7 @@ if (-not (Test-Path $icon)) { & $venvPython (Join-Path $repo 'scripts\make_windo
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $buildRoot 'pyinstaller-cache'
 Push-Location $repo
 try {
-    & $venvPython -m PyInstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths (Join-Path $repo 'src') --icon $icon --distpath $distRoot --workpath $workRoot --specpath $specRoot $entry
+    & $venvPython -m PyInstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths (Join-Path $repo 'src') --add-data "$arcmapResources;geopublisher/resources" --icon $icon --distpath $distRoot --workpath $workRoot --specpath $specRoot $entry
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed: $LASTEXITCODE" }
 } finally { Pop-Location }
 if (-not (Test-Path (Join-Path $application 'GeoPublisher-Workbench.exe'))) { throw 'Missing packaged Windows exe' }

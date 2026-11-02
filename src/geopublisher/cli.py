@@ -32,7 +32,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--strategy", choices=["fail", "skip", "new-version"], default="fail")
     plan.add_argument("--encoding", help="CPG 缺失时显式确认 GBK/UTF-8 等编码")
     plan.add_argument("--crs", help="明确赋予缺失的 CRS；不执行重投影")
-    plan.add_argument("--sld", type=Path)
+    plan.add_argument("--sld", type=Path, help="单图层 SLD 路径")
+    plan.add_argument("--sld-directory", type=Path, help="按 SHP/TIFF 文件名精确匹配批量 SLD")
     plan.add_argument("--name", help="单数据集的服务图层名称")
     plan.add_argument("--wfs", action="store_true", help="矢量同时验收 WFS")
     plan.add_argument(
@@ -48,6 +49,16 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("plan", type=Path)
         command.add_argument("--journal", type=Path)
         command.add_argument("--yes", action="store_true", help="表示已审核并授权此计划及列出的操作")
+    arcmap = sub.add_parser("arcmap-helper", help="导出离线 ArcMap 10.x MXD→SHP/LYR 辅助脚本")
+    arcmap.add_argument("--output", type=Path, required=True)
+    arcmap.add_argument("--demo", action="store_true", help="导出 ArcMap 中真正创建合成 MXD 的示例脚本")
+    gdb = sub.add_parser("convert-gdb", help="离线批量转换本地 GDB 要素类为 SHP（附字段映射报告）")
+    gdb.add_argument("gdb", type=Path, help="本机 .gdb 目录")
+    gdb.add_argument("--output", required=True, type=Path, help="全新输出目录，不覆盖已有数据")
+    gdb.add_argument("--gdal-bin", required=True, type=Path, help="受控 GDAL 3.13.3 bin 目录")
+    gdb.add_argument("--include-annotation-bounds", action="store_true", help="允许导出注记边界，但不保留完整文字排版")
+    gdb.add_argument("--layer", action="append", help="只处理指定 GDB 图层；可重复使用")
+    gdb.add_argument("--preview", action="store_true", help="只读预览，不生成任何输出文件")
     status = sub.add_parser("status", help="查看本地任务记录")
     status.add_argument("--journal", type=Path, required=True)
     status.add_argument("--task")
@@ -78,6 +89,51 @@ def main(argv=None) -> int:
                     result["workspace_exists"] = client.get_workspace(environment.workspace) is not None
             _print(result)
             return 0
+        if args.command == "arcmap-helper":
+            from .arcgis_bridge import save_arcmap_helper
+
+            target = save_arcmap_helper(args.output, demo=args.demo)
+            _print({"status": "EXPORTED", "script": str(target), "requires": "ArcMap 10.x / ArcPy", "synthetic_demo": args.demo})
+            return 0
+        if args.command == "convert-gdb":
+            from .datasets import DatasetError, GdalRuntime
+            from .gdb_export import convert_gdb, inspect_gdb
+
+            runtime = GdalRuntime(args.gdal_bin, expected_version="3.13.3")
+            if args.preview:
+                metadata = inspect_gdb(runtime, args.gdb)
+                chosen = [x for x in metadata["layers"] if not args.layer or x["name"] in args.layer]
+                if not chosen or (args.layer and not set(args.layer).issubset({x["name"] for x in chosen})):
+                    raise DatasetError("GDB_LAYER_SELECTION_INVALID", "指定的图层名称不存在于当前 GDB。")
+                _print({
+                    "mode": "READ_ONLY_PREVIEW",
+                    "source": Path(args.gdb).name,
+                    "layer_count": len(chosen),
+                    "feature_count": sum(int(x["feature_count"] or 0) for x in chosen),
+                    "annotation_layers": sum(bool(x["annotation"]) for x in chosen),
+                    "empty_layers": sum(not x["feature_count"] for x in chosen),
+                    "warnings": sum(len(x["warnings"]) for x in chosen),
+                    "layers": [
+                        {"name": x["name"], "feature_count": x["feature_count"],
+                         "geometry": x["geometry"], "crs": x["crs"],
+                         "annotation": x["annotation"], "warnings": x["warnings"]}
+                        for x in chosen
+                    ],
+                })
+                return 0
+            report = convert_gdb(
+                runtime, args.gdb, args.output,
+                include_annotations=args.include_annotation_bounds,
+                only_layers=args.layer,
+            )
+            _print({
+                "status": "LOCAL_CONVERSION_COMPLETE",
+                "summary": report["summary"],
+                "report_path": str(Path(args.output).absolute() / "conversion-report.json"),
+                "source_unchanged": report["source_unchanged"],
+                "requires_human_style_review": True,
+            })
+            return 3 if report["summary"].get("FAILED", 0) else 0
         if args.command == "plan":
             plan = build_plan(
                 Environment.load(args.environment),
@@ -87,6 +143,7 @@ def main(argv=None) -> int:
                 encoding=args.encoding,
                 declared_crs=args.crs,
                 sld=args.sld,
+                sld_directory=args.sld_directory,
                 target_name=args.name,
                 enable_wfs=args.wfs,
                 raster_mode=args.raster_mode,

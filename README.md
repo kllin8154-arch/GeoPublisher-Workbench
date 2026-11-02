@@ -2,7 +2,7 @@
 
 面向实施人员的 GeoServer 自动发布工作台。Python 核心同时驱动 CLI 和中文 PySide6 桌面界面：本地预检 → 冻结发布计划 → REST 发布 → WMS 实图验收 → 任务报告与目录绑定清单。
 
-**第一次使用？先看 [三步上手指南](docs/QUICKSTART-ZH.md)**：环境设置和只读连接检查 → 拖入 SHP/TIFF 并本地预检 → 确认发布、查看地图与报告。日常只显示常用选项，编码、CRS、SLD 和凭据变量等高级设置按需展开。
+**第一次使用？先看 [三步上手指南](docs/QUICKSTART-ZH.md)**：环境设置和只读连接检查 → 拖入 SHP/TIFF 并本地预检 → 确认发布、查看地图与报告。若来源是 GDB、MXD 或 LYR，请先阅读 [离线转换与字段映射指南](docs/IMPORT-GDB-MXD-LYR.md)：GDB 可用受控 GDAL 转 SHP，MXD/LYR 则需要相应的 ArcMap/QGIS 适配工具。
 
 **当前版本：0.1.0 开发预览。** 已在 Windows 10 和 Linux 的隔离环境中，使用 GeoServer 2.24.4、GDAL 3.13.3 与合成数据完成核心发布、重复执行、配置清理及上传响应丢失验证。Windows 原生桌面启动与字体烟测、受控 GDAL 已取得本地证据；完整 Windows/Linux 离线发行物与现场环境仍需验收，当前构建不等于可直接交付内网的离线安装包。详见 [验证汇总](docs/VALIDATION.md) 和 [Windows 本地验证报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。
 
@@ -17,6 +17,7 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 能力 | 当前行为 |
 |---|---|
 | 数据输入 | 单个或批量 SHP、独立 GeoTIFF；多个 TIFF 需要明确确认分别发布，已知 Mosaic/Pyramid 结构及辅助索引阻断；源文件保持不变 |
+| 本地格式转换 | **GDB→SHP**：只读预检、按要素类选择、稳定的 DBF 短字段名、CSV 字段对照、失败残留隔离；**MXD**：导出 ArcMap 10.x 本地辅助脚本及真实合成 MXD 生成脚本；**LYR**：配合 QGIS 插件导出 SLD，再按同名图层精确匹配 |
 | 本地预检 | SHP 组件、编码、CRS、字段、范围；TIFF CRS、波段和外部依赖；首版发布要求可验证的 EPSG；明确指定受控 GDAL |
 | 样式 | 默认点/线/面/栅格 SLD，或最多 5 MiB 的已有 SLD；检查字段引用并拒绝外部资源 |
 | 发布策略 | 同名停止、明确跳过、任务固定名称的新版本；不提供原位替换 |
@@ -26,7 +27,7 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 目录接入 | 导出绑定清单；人工核验字段映射后生成 PostgreSQL SQL；不连接业务数据库 |
 | 桌面界面 | 数据选择、环境设置、预检、一次任务级确认、后台执行、检查点取消、真实地图、历史及恢复 |
 
-尚不支持 QML/ArcGIS 样式转换、ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
+当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
 
 ## Windows 开发环境
 

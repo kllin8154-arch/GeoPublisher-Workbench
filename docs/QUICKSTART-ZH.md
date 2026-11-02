@@ -25,7 +25,7 @@
 
 ## 第 1 步：选择数据
 
-点击 **发布任务**，把 SHP、GeoTIFF 或包含这类文件的目录拖入列表，也可以点“添加文件”或“添加目录”。
+点击 **发布任务**，把 SHP、GeoTIFF 或包含这类文件的目录拖入列表，也可以点“添加文件”或“添加目录”。如果原始文件是 **GDB、MXD 或 LYR**，先点“GDB / MXD / LYR 转换”：GDB 可在工作台只读预检后勾选导出 SHP；MXD 则导出 ArcMap 辅助脚本，LYR 由已有 QGIS 插件导出 SLD。具体操作见 [离线转换说明](IMPORT-GDB-MXD-LYR.md)。
 
 ![选择数据](images/guided-import.png)
 

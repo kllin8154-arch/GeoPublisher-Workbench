@@ -751,3 +751,25 @@ def test_gdb_layer_selection_prechecks_regular_layers_and_safely_skips_annotatio
     assert window._select_gdb_layers(source_info, False) == ["FAULT"]
     assert window._select_gdb_layers(source_info, True) == ["FAULT", "TEXT_A"]
     assert "\n" in desktop.gdb_preview_summary(source_info)
+
+def test_style_remap_opt_in_exposed_in_cli_and_hidden_by_default(window):
+    from geopublisher.cli import parser
+
+    assert not window.remap_sld_fields.isChecked()
+    assert window.advanced_import_options.isHidden()
+    window.advanced_import_button.click()
+    assert not window.advanced_import_options.isHidden()
+    window.remap_sld_fields.click()
+    assert window.remap_sld_fields.isChecked()
+    parsed = parser().parse_args([
+        "plan", "D:/synthetic/fault.shp", "--environment", "D:/synthetic/env.json",
+        "--output", "D:/synthetic/fresh-plan", "--sld-directory", "D:/synthetic/styles",
+        "--remap-sld-fields",
+    ])
+    assert parsed.remap_sld_fields is True
+    assert parsed.sld_directory.name == "styles"
+    without_opt = parser().parse_args([
+        "plan", "D:/synthetic/fault.shp", "--environment", "D:/synthetic/env.json",
+        "--output", "D:/synthetic/fresh-plan", "--sld-directory", "D:/synthetic/styles",
+    ])
+    assert without_opt.remap_sld_fields is False

@@ -74,8 +74,9 @@ python arcmap_create_synthetic_mxd.py "D:\ArcMap\blank.mxd" "D:\LocalGIS\synthet
 1. 在 QGIS 中安装用户已有的 QGIS Style Assistant 0.4.0，并按其提示安装 SLYR（Community Edition 或具备相应解析许可的版本）。
 2. 先加载正确的数据图层，选择 `.lyr`（或其支持的 `.mxd`）应用原始分类符号，再导出 `.qml` 与 `.sld`。QML 作为 QGIS 复核依据，SLD 供 GeoServer 使用。
 3. 在工作台 **展开高级选项 → 批量 SLD 目录** 选择输出文件夹。**仅允许同名精确匹配**：`fault.shp` 必须配 `fault.sld`。缺少、大小写冲突或异常大的 SLD 会在本地预检阶段阻断。
-4. GDB 字段缩短后，SLD 分类字段仍可能引用原字段名；必须依据 `字段对照.csv` 重新匹配。**目前尚未实现任意 QGIS/SLYR 表达式的安全自动重写。**
-5. 发布后必须检查实际 WMS 地图、图例、分类颜色、线型、标注与比例尺。QML/SLD 文件成功生成不代表 GeoServer 视觉上完全等价。
+4. 如果 SLD 仍引用 GDB 原字段而 SHP 已缩短字段名，可先在转换目录检查 `字段对照.csv`，再在工作台高级选项显式勾选 **“我已核对字段对照：修复 SLD 中的原字段名”**。程序会要求 SHP 同目录存在原转换器生成的 `conversion-report.json`，核对 SHP、DBF、SHX、PRJ、CPG 每个文件的 SHA256 与实际字段目录后，**仅生成新任务的 SLD 副本**，支持简单的 `ogc:PropertyName` 和 `fes:ValueReference` 精确原字段替换。不会修改原始 SLD、QML、GDB、SHP。
+5. 表达式型字段引用（如 XPath、函数）、缺失字段、旧报告、重复字段或转换不成功的图层**会阻断**，不会猜测修复。用户未勾选时，系统沿用原 SLD，缺少目标 DBF 字段会按既有预检阻断。不能把启用字段对照视作 ArcGIS 图例完全兼容。
+6. 发布后必须检查实际 WMS 地图、图例、分类颜色、线型、标注与比例尺。QML/SLD 文件成功生成不代表 GeoServer 视觉上完全等价。
 
 参考：GDAL [OpenFileGDB](https://gdal.org/en/stable/drivers/vector/openfilegdb.html)、[Shapefile](https://gdal.org/en/stable/drivers/vector/shapefile.html)；SLYR [GeoServer 样式限制](https://slyr.north-road.com/user_guide/limitations)。
 

@@ -34,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--crs", help="明确赋予缺失的 CRS；不执行重投影")
     plan.add_argument("--sld", type=Path, help="单图层 SLD 路径")
     plan.add_argument("--sld-directory", type=Path, help="按 SHP/TIFF 文件名精确匹配批量 SLD")
+    plan.add_argument("--remap-sld-fields", action="store_true", help="显式确认：用同目录 GDB 转换报告核对哈希后修复简单字段引用")
     plan.add_argument("--name", help="单数据集的服务图层名称")
     plan.add_argument("--wfs", action="store_true", help="矢量同时验收 WFS")
     plan.add_argument(
@@ -144,6 +145,7 @@ def main(argv=None) -> int:
                 declared_crs=args.crs,
                 sld=args.sld,
                 sld_directory=args.sld_directory,
+                remap_sld_fields=args.remap_sld_fields,
                 target_name=args.name,
                 enable_wfs=args.wfs,
                 raster_mode=args.raster_mode,

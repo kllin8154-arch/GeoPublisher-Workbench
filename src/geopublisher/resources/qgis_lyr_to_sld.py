@@ -126,7 +126,7 @@ def _write_report(output: Path, rows: list[dict]) -> None:
 
 
 def convert(source: Path | str, output: Path | str, *, plugin_parent: Path | str | None = None,
-            qgis_prefix: str | None = None) -> list[dict]:
+            qgis_prefix: str | None = None, cancel_file: str | None = None) -> list[dict]:
     pairs = discover_pairs(source)
     root = _safe_source(Path(source))
     dest = _new_output(output, root)
@@ -160,6 +160,10 @@ def convert(source: Path | str, output: Path | str, *, plugin_parent: Path | str
     artifacts.mkdir()
     rows: list[dict] = []
     for shp, lyr in pairs:
+        if cancel_file and Path(cancel_file).is_file():
+            rows.append({"shp": shp.name, "lyr": lyr.name, "status": "CANCELLED"})
+            print("STYLE_CANCELLED=" + shp.stem, flush=True)
+            continue
         row = {"shp": shp.name, "lyr": lyr.name, "status": "FAILED"}
         staged = artifacts / shp.stem
         staged.mkdir()
@@ -204,10 +208,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("new_output_dir", help="全新样式输出目录，不允许覆盖")
     parser.add_argument("--plugin-parent", help="QGIS 用户插件的父目录；默认当前 QGIS 主版本的 default profile")
     parser.add_argument("--qgis-prefix", help="需要时明确指定 QGIS 应用安装目录")
+    parser.add_argument("--cancel-file", help="本地取消检查点文件（不会强行结束进程）")
     args = parser.parse_args(argv)
     try:
         rows = convert(args.source_dir, args.new_output_dir,
-                       plugin_parent=args.plugin_parent, qgis_prefix=args.qgis_prefix)
+                       plugin_parent=args.plugin_parent, qgis_prefix=args.qgis_prefix,
+                       cancel_file=args.cancel_file)
     except ConversionError as exc:
         print("STYLE_CONVERSION_BLOCKED: " + str(exc), file=sys.stderr)
         return 2

@@ -37,6 +37,7 @@
 - [x] GDB 字段对照与 SLD 的简单字段引用显式映射，逐文件哈希和计划副本留痕，复杂表达式拒绝自动修复
 - [x] 数学生成 GDB→SHP→短字段映射→SLD 在 GeoServer 2.24.4 上的真实只读 WMS 分类像素验证（停机准备测试 catalog，非正式 REST 发布；[验证](VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)）
 - [x] 真正的 ArcMap 10.8 合成二进制 MXD→SHP/LYR 与 QGIS 4.2.1 + SLYR 批量 QML/SLD 离线转换，中文路径及源文件 SHA256 验证通过；[本机验收](VALIDATION-ARCMAP-QGIS-2026-11-02.md)
+- [x] 中文桌面界面直接执行受控本地 ArcMap MXD 与 QGIS LYR 转换、可见进度与安全取消、结果报告及人工确认后回填 SHP/SLD；[验收](VALIDATION-DIRECT-MXD-LYR-2026-11-02.md)
 - [ ] 用授权的复杂 MXD/LYR 在离线 ArcMap/QGIS 验证样式、标注与 GeoServer WMS 实图视觉一致性
 - [ ] SFTP/共享目录的大文件传输
 - [ ] 已知 ImagePyramid 目录兼容

@@ -27,7 +27,7 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 目录接入 | 导出绑定清单；人工核验字段映射后生成 PostgreSQL SQL；不连接业务数据库 |
 | 桌面界面 | 数据选择、环境设置、预检、一次任务级确认、后台执行、检查点取消、真实地图、历史及恢复 |
 
-当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
+已在隔离 GeoServer 2.24.4 上以**纯数学合成多边形**完成 GDB→SHP→短字段映射→SLD 的真实只读 WMS 颜色验证；见 [分类样式实测](docs/VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)。此测试采用停机准备的专用 catalog，不代表正式 REST 发布或真实 LYR/MXD 视觉保真。当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
 
 ## Windows 开发环境
 

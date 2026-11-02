@@ -43,7 +43,7 @@ jobs:
         run: uv run --frozen --no-sync python -m build --no-isolation
       - name: Build Windows desktop preview
         if: runner.os == 'Windows'
-        run: uv run --frozen --no-sync pyinstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths src scripts/desktop_entry.py
+        run: uv run --frozen --no-sync pyinstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths src --add-data "src/geopublisher/resources;geopublisher/resources" scripts/desktop_entry.py
       - name: Upload build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -52,6 +54,35 @@ _KIND_LABELS = {
     "shapefile": "矢量 SHP",
     "geotiff": "栅格 TIFF",
 }
+
+
+def gdb_preview_summary(info: dict, *, include_annotations: bool = False) -> str:
+    """Explain local GDB analysis without declaring SHP attributes lossless."""
+    layers = info.get("layers", [])
+    annotation = sum(bool(layer.get("annotation")) for layer in layers)
+    empty = sum(not layer.get("feature_count") for layer in layers)
+    rename = sum(
+        field.get("renamed", False)
+        for layer in layers
+        for field in layer.get("field_map", [])
+    )
+    omitted = sum(
+        field.get("omitted", False)
+        for layer in layers
+        for field in layer.get("field_map", [])
+    )
+    planned = sum(
+        bool(layer.get("feature_count"))
+        and bool(layer.get("crs"))
+        and (include_annotations or not layer.get("annotation"))
+        for layer in layers
+    )
+    return (
+        f"已找到 {len(layers)} 个要素类，共 {info.get('feature_count', 0)} 条要素。\n"
+        f"默认计划导出 {planned} 个，注记相关 {annotation} 个，空图层 {empty} 个。\n"
+        f"源字段可能需要改短名 {rename} 处，可能省略 {omitted} 处。\n"
+        "这是只读分析；确认后才在本地创建 SHP 副本，原始 GDB 不变。"
+    )
 
 
 def result_next_action(status: str) -> str:
@@ -207,6 +238,7 @@ class MainWindow(QMainWindow):
         self._worker_success: Callable | None = None
         self._cancel = threading.Event()
         self._connection_testing = False
+        self._pending_gdb_conversion = None
         self._building_forms = True
         self._preview_paths: list[Path] = []
         self._preview_pixmap: QPixmap | None = None
@@ -350,6 +382,7 @@ class MainWindow(QMainWindow):
         for label, action in (
             ("添加文件", self._choose_sources),
             ("添加目录", self._choose_source_folder),
+            ("GDB / MXD / LYR 转换", self._arcgis_conversion),
             ("清空", self._clear_sources),
         ):
             button = QPushButton(label)
@@ -395,7 +428,10 @@ class MainWindow(QMainWindow):
         advanced_form = QFormLayout(self.advanced_import_options)
         self.style_path = QLineEdit()
         self.style_path.setPlaceholderText("留空时自动生成简单样式")
-        advanced_form.addRow("自定义 SLD 样式", self._path_row(self.style_path, self._choose_style))
+        advanced_form.addRow("单图层 SLD 样式", self._path_row(self.style_path, self._choose_style))
+        self.sld_directory = QLineEdit()
+        self.sld_directory.setPlaceholderText("QGIS 插件批量导出的 SLD 所在文件夹；需与 SHP/TIFF 同名")
+        advanced_form.addRow("批量 SLD 目录", self._path_row(self.sld_directory, self._choose_sld_directory))
         self.encoding = QComboBox()
         self.encoding.addItem("自动读取 .cpg", None)
         self.encoding.addItem("UTF-8", "UTF-8")
@@ -437,7 +473,7 @@ class MainWindow(QMainWindow):
                 self.inspect_button,
             )
         )
-        for edit in (self.style_path, self.crs, self.target_name, self.output_root):
+        for edit in (self.style_path, self.sld_directory, self.crs, self.target_name, self.output_root):
             edit.textChanged.connect(self._invalidate_plan)
         self.encoding.currentIndexChanged.connect(self._invalidate_plan)
         self.strategy.currentIndexChanged.connect(self._invalidate_plan)
@@ -816,6 +852,240 @@ class MainWindow(QMainWindow):
         if path:
             self.style_path.setText(path)
 
+    def _choose_sld_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "选择 QGIS 导出的批量 SLD 目录")
+        if directory:
+            self.sld_directory.setText(directory)
+            self.advanced_import_button.setChecked(True)
+
+    def _export_arcmap_helper(self) -> None:
+        from .arcgis_bridge import save_arcmap_helper
+
+        output, _filter = QFileDialog.getSaveFileName(
+            self, "保存 ArcMap MXD→SHP/LYR 离线脚本",
+            str(self._work_dir.parent / "arcmap_mxd_to_shp.py"),
+            "ArcMap Python 脚本 (*.py)",
+        )
+        if not output:
+            return
+        try:
+            result = save_arcmap_helper(output)
+        except (ConfigError, OSError) as exc:
+            QMessageBox.warning(self, "无法导出 ArcMap 脚本", str(exc))
+            return
+        QMessageBox.information(
+            self, "离线脚本已导出",
+            f"已保存：{result}\n"
+            "请在装有 ArcMap 10.x/ArcPy 且能访问 MXD 原始数据的离线电脑上执行。\n"
+            '用法：python arcmap_mxd_to_shp.py "地图.mxd" "新的输出目录"\n'
+            "不会在本程序中自动执行 ArcPy，也不会把数据上传服务器。",
+        )
+
+    def _arcgis_conversion(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("GIS 数据与样式离线转换")
+        dialog.resize(650, 410)
+        layout = QVBoxLayout(dialog)
+        hint = QLabel(
+            "① GDB → SHP：使用受控 GDAL 在本机批量导出要素类，原始 GDB 不变，附字段映射报告。"
+            "\n② MXD → SHP + LYR：在装有 ArcMap 10.x 的离线电脑运行辅助脚本；MXD 不能单独还原数据。"
+            "\n③ LYR → SLD：在 QGIS Style Assistant 0.4.0 套用样式并导出，再按 SHP 名称批量匹配。"
+            "\n\n注记层、长字段、中文字段和复杂符号都需要核对；转换成功不等于样式无损。"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        annotation = QCheckBox("也导出注记图层的几何边界（不保留真实文字排版）")
+        layout.addWidget(annotation)
+        gdb_button = QPushButton("GDB 批量转换为 SHP（本地离线）")
+        gdb_button.clicked.connect(
+            lambda: (dialog.accept(), self._choose_gdb_and_export(annotation.isChecked()))
+        )
+        layout.addWidget(gdb_button)
+        save_button = QPushButton("导出 ArcMap MXD→SHP 辅助脚本")
+        save_button.clicked.connect(self._export_arcmap_helper)
+        layout.addWidget(save_button)
+        demo_button = QPushButton("导出 ArcMap 合成 MXD 测试样本生成脚本")
+        demo_button.clicked.connect(self._export_arcmap_demo_helper)
+        layout.addWidget(demo_button)
+        folder_button = QPushButton("选择 QGIS 导出的 SLD 文件夹")
+        folder_button.clicked.connect(lambda: (self._choose_sld_directory(), dialog.accept()))
+        layout.addWidget(folder_button)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        dialog.exec()
+
+    def _export_arcmap_demo_helper(self) -> None:
+        """Export code which needs REAL ArcMap 10.x to create a valid MXD."""
+        from .arcgis_bridge import save_arcmap_helper
+
+        target, _filter = QFileDialog.getSaveFileName(
+            self, "导出 ArcMap 合成 MXD 测试脚本",
+            str(self._work_dir.parent / "arcmap_create_synthetic_mxd.py"),
+            "ArcMap Python 脚本 (*.py)",
+        )
+        if not target:
+            return
+        try:
+            path = save_arcmap_helper(target, demo=True)
+        except (ConfigError, OSError) as exc:
+            QMessageBox.warning(self, "脚本未导出", str(exc))
+            return
+        QMessageBox.information(
+            self, "合成 MXD 脚本已导出",
+            f"脚本：{path}\n"
+            "本机没有 ArcMap，不能伪造一个有效的 MXD 二进制文件。\n"
+            "需在真正安装 ArcMap 10.x 的离线电脑准备空白 MXD 模板后执行：\n"
+            'python arcmap_create_synthetic_mxd.py "空白模板.mxd" "全新输出目录"\n'
+            "脚本只创建数学点、线、面和真实 MXD 副本，不访问地质业务数据。",
+        )
+
+    def _choose_gdb_and_export(self, include_annotations: bool = False) -> None:
+        """Explicit local batch conversion, never a GeoServer upload."""
+        if self._thread is not None:
+            return
+        gdb_path = QFileDialog.getExistingDirectory(
+            self, "选择本地 .gdb 文件夹（原始数据保持不变）",
+            str(self._work_dir),
+        )
+        if not gdb_path:
+            return
+        source = Path(gdb_path).absolute()
+        if source.suffix.casefold() != ".gdb":
+            QMessageBox.warning(self, "没有选择 GDB", "请进入数据所在目录并选择以 .gdb 结尾的文件夹。")
+            return
+        try:
+            from .datasets import DatasetError, GdalRuntime
+
+            runtime = GdalRuntime(
+                self.gdal_bin.text().strip(),
+                expected_version=self.gdal_version.text().strip() or "3.13.3",
+                credential_env_names=(self.username_env.text(), self.password_env.text()),
+            )
+        except (DatasetError, ValueError) as exc:
+            QMessageBox.warning(self, "请先配置 GDAL", str(exc))
+            return
+        from .gdb_export import inspect_gdb
+
+        self.activity.setText("正在只读分析 GDB 图层与字段，不会生成 SHP 或上传服务器。")
+        self._start_worker(
+            lambda _event: inspect_gdb(runtime, source),
+            lambda info: self._show_gdb_preview(info, runtime, source, include_annotations),
+        )
+
+    def _select_gdb_layers(self, info: dict, include_annotations: bool) -> list[str] | None:
+        """One checkable list makes skipped/annotation layers clear before work."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("GDB 图层检查 · 选择要导出的图层")
+        dialog.resize(740, 560)
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(gdb_preview_summary(info, include_annotations=include_annotations))
+        summary.setWordWrap(True)
+        summary.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(summary)
+        list_widget = QListWidget()
+        layout.addWidget(list_widget)
+        for layer in info.get("layers", []):
+            count = int(layer.get("feature_count") or 0)
+            reason = (
+                "空图层，默认跳过" if not count else
+                "注记边界，非文字样式" if layer.get("annotation") else
+                "需人工核对字段/样式" if layer.get("warnings") else "普通图层"
+            )
+            item = QListWidgetItem(
+                f"{layer['name']} · {count} 条 · {layer.get('geometry', '未知类型')} · {reason}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, layer["name"])
+            allowed = count > 0 and bool(layer.get("crs")) and (
+                include_annotations or not layer.get("annotation")
+            )
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if allowed else Qt.CheckState.Unchecked)
+            if not allowed:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            list_widget.addItem(item)
+        note = QLabel(
+            "只有被勾选的图层会转换。字段短名、中文属性和注记布局都需要检查；"
+            "失败的部分文件会隔离，不会进入发布列表。"
+        )
+        note.setWordWrap(True)
+        note.setObjectName("muted")
+        layout.addWidget(note)
+        actions = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        actions.button(QDialogButtonBox.StandardButton.Ok).setText("确认转换选中的图层")
+        actions.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        actions.accepted.connect(dialog.accept)
+        actions.rejected.connect(dialog.reject)
+        layout.addWidget(actions)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return [
+            list_widget.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(list_widget.count())
+            if list_widget.item(index).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _show_gdb_preview(self, info, runtime, source, include_annotations: bool) -> None:
+        chosen = self._select_gdb_layers(info, include_annotations)
+        if chosen is None:
+            self.activity.setText("已取消本地 GDB 转换；未写出 SHP。")
+            return
+        if not chosen:
+            self.activity.setText("没有勾选可导出的图层；未创建输出目录。")
+            QMessageBox.information(self, "尚未选择图层", "请至少勾选一个可导出的图层。")
+            return
+        self._pending_gdb_conversion = (runtime, source, include_annotations, chosen)
+        if self._thread is None:
+            # Unit tests may use a synchronous worker; normal Qt work moves on
+            # from _thread_finished after the inspect worker has stopped.
+            pending, self._pending_gdb_conversion = self._pending_gdb_conversion, None
+            self._begin_gdb_conversion(*pending)
+
+    def _begin_gdb_conversion(
+        self, runtime, source: Path, include_annotations: bool, names: list[str]
+    ) -> None:
+        from .gdb_export import convert_gdb
+
+        parent = Path(self.output_root.text()).expanduser().absolute()
+        output = parent / (
+            datetime.now().strftime("gdb-export-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+        )
+        self.activity.setText(
+            f"正在本地转换所选 {len(names)} 个图层；原始 GDB 不变，也不会上传服务器。"
+        )
+        self._start_worker(
+            lambda _event: convert_gdb(
+                runtime, source, output,
+                include_annotations=include_annotations, only_layers=names,
+            ),
+            self._show_gdb_export_result,
+        )
+
+    def _show_gdb_export_result(self, report: dict) -> None:
+        counts = report.get("summary", {})
+        converted = sum(count for status, count in counts.items() if status.startswith("EXPORTED"))
+        failed = counts.get("FAILED", 0)
+        skipped = sum(count for status, count in counts.items() if status.startswith("SKIPPED"))
+        report_file = Path(report["destination"]) / "conversion-report.json"
+        message = (
+            f"本地转换完成：{converted} 个图层已生成 SHP，{skipped} 个已跳过，{failed} 个失败。\n"
+            f"详细报告：{report_file}\n"
+            "数据不会自动发布；字段改名、类型差异、注记与 LYR 样式须核对。"
+        )
+        self.activity.setText(message)
+        if not converted:
+            QMessageBox.warning(self, "未生成可用 SHP", message)
+            return
+        choice = QMessageBox.question(
+            self, "GDB 转换结果", message + "\n\n将成功导出的 SHP 目录加入当前发布任务吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice == QMessageBox.StandardButton.Yes:
+            self.add_sources([report["destination"]])
+
     def _choose_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择任务产物目录", self.output_root.text())
         if path:
@@ -889,6 +1159,7 @@ class MainWindow(QMainWindow):
             "encoding": self.encoding.currentData(),
             "declared_crs": self.crs.text().strip() or None,
             "sld": self.style_path.text().strip() or None,
+            "sld_directory": self.sld_directory.text().strip() or None,
             "target_name": self.target_name.text().strip() or None,
             "enable_wfs": self.wfs.isChecked(),
             "raster_mode": "independent" if self.independent_tiffs.isChecked() else None,
@@ -1068,6 +1339,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _worker_failed(self, error: dict) -> None:
+        self._pending_gdb_conversion = None
         message = f"{error['code']}：{error['message']}"
         self.activity.setText(message)
         if self._connection_testing:
@@ -1090,6 +1362,9 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.cancel_button.setEnabled(False)
         self._refresh_history()
+        if self._pending_gdb_conversion is not None:
+            pending, self._pending_gdb_conversion = self._pending_gdb_conversion, None
+            self._begin_gdb_conversion(*pending)
 
     @Slot(object)
     def _receive_event(self, event: dict) -> None:

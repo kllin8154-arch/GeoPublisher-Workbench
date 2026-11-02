@@ -1,0 +1,87 @@
+# GDB、MXD、LYR 离线转换与 GeoServer 发布流程
+
+> **当前阶段：内部开发预览。** 仅处理已授权的本地数据；现场地质 GDB/MXD/SHP 不得上传 GitHub、公网 API 或远程服务器。所有生成文件均在用户选择的本地目录中，默认不自动发布。
+
+## 从什么格式开始
+
+| 原始类型 | 数据包含什么 | 转换流程 | 前置条件 |
+|---|---|---|---|
+| **FileGDB（.gdb 文件夹）** | 可能包含点、线、面要素类、字段和注记 | 工作台“GDB / MXD / LYR 转换” → GDB 批量转 SHP → 对照属性与坐标系 → 发布 | 受控 GDAL 3.13.3（OpenFileGDB） |
+| **MXD（.mxd）** | ArcMap 地图工程，引用数据源和渲染/图层顺序；通常没有真实要素几何 | 导出 ArcMap 10.x 辅助脚本 → 在可访问原数据的离线 ArcMap 中产生 SHP、LYR → QGIS 样式迁移 | 需要有效的 MXD **及其被引用的数据源**，ArcMap / ArcPy |
+| **LYR（.lyr）** | ArcMap 符号、分级、标注、比例尺等 | QGIS + QGIS Style Assistant 0.4.0 + SLYR → QML/SLD → 工作台 SLD 校验 → WMS 实图检查 | 与插件、SLYR 实际兼容的 QGIS 版本；复杂对象可能需要其他 SLYR 能力或人工修正 |
+| **GPKG、SHP、TIFF** | 已经是空间数据文件 | SHP、独立 TIFF 可直接进入 GeoPublisher；GPKG 先通过离线 GDAL 显式转换 | 对来源 CRS、字段和权限作预检 |
+
+**不要把 GDB 或 TIFF 中的所有内容一律变为 SHP**：Shapefile 只适合单一几何类型的矢量数据，栅格应保留 TIFF；包含大量字段、注记或复杂属性结构时，GeoPackage/PostGIS 更适合生产用途。
+
+## GDB 批量转 SHP（推荐先使用这一入口）
+
+1. 打开桌面 **GeoPublisher Workbench** → **发布任务** → **GDB / MXD / LYR 转换**。
+2. 点击“GDB 批量转换为 SHP（本地离线）”，选择实际的 `.gdb` 文件夹。程序会先在后台**只读检查**图层数量、要素数量、字段名、注记层、CRS 与风险，不生成 SHP。
+3. 在弹出的图层清单中选择需要导出的图层；默认勾选非空的普通矢量图层。默认**不勾选**注记层：注记边界不是文字排版，不应误当完整地质注记。如果明确勾选“也导出注记边界”，才允许选择对应图层。
+4. 确认后在本地 D 盘创建全新输出目录，GDAL 逐要素类只读 GDB 并生成 SHP，失败的部分结果放到 `artifacts/`。
+5. 检查自动生成的三份报告，再决定是否将成功的 SHP 加入发布任务：
+
+   - `conversion-report.json`：图层状态、原始要素数与导出数、CRS、原字段/目标字段映射、错误代码。
+   - **`字段对照.csv`**：可用 Excel 直接查看字段名称变化和省略字段。
+   - **`转换说明.txt`**：面向普通使用者的结果概况。
+
+**安全策略**：始终创建全新输出目录；原始 GDB 前后 SHA256 对比。失败图层的部分结果被隔离在 `artifacts/`，不会作为可发布 SHP 导入。没有可靠 CRS、无法读取的数据索引、空层和注记层均按明确结果说明，不静默跳过后声称全量完成。
+
+### 本机 CLI 示例
+
+在 PowerShell、当前仓库目录执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m geopublisher convert-gdb "D:\LocalGIS\Sample.gdb" --gdal-bin ".pixi\envs\default\Library\bin" --output "D:\Java-p\GeoPublisher-Workbench-validation\conversion-new" --preview
+
+.\.venv\Scripts\python.exe -m geopublisher convert-gdb "D:\LocalGIS\Sample.gdb" --gdal-bin ".pixi\envs\default\Library\bin" --output "D:\Java-p\GeoPublisher-Workbench-validation\conversion-new"
+```
+
+上述示例中的 `Sample.gdb` 是占位路径，不会自动读取实际业务数据。第二条命令只有在输出目录不存在时才执行。
+
+### 字段名与注记的限制
+
+Shapefile DBF 字段名最多 10 个**字节**，长字段、中文字段、重复截断名和 Binary/DateTime 等不支持的字段不能保证原样保留。本工具采用稳定的 10 字符内 ASCII 映射，完整对照存入报告；对不受支持的字段给出省略记录，**不能把“要素数量一致”当作属性无损**。UTF-8 数据字段值仍需要抽样核对，尤其是中文长文本和空值。
+
+一个 GDB 注记层的面几何只是文字区域或边界，不能代表原来的字号、字体、文本位置和标注表达式。需要用 MXD/LYR 和 QGIS Style Assistant 迁移样式，并对 WMS 地图做人工验收。
+
+若 OpenFileGDB 报记录索引错位或行长度异常，不能把 `-skipfailures` 当作正式完整转换。应在**隔离的源库副本**中使用 ArcGIS/其他兼容驱动检查，然后另行确认可恢复要素数；本工具会标记失败并隔离部分产物。
+
+## MXD → SHP + LYR
+
+MXD 中存储的是地图工程关系，真实要素通常在外部 GDB/SHP。**仅有 MXD，没有它引用的数据源，无法凭空恢复 SHP 要素。**
+
+在工作台“GDB / MXD / LYR 转换”里可导出 `arcmap_mxd_to_shp.py`。此脚本只适用于装有 **ArcMap 10.x / ArcPy（Python 2.7）** 且可访问原始数据的离线电脑：
+
+```powershell
+python arcmap_mxd_to_shp.py "D:\LocalGIS\project.mxd" "D:\LocalGIS\mxd-export-new"
+```
+
+脚本只导出本地矢量图层，断开的数据源、UNC、SDE、远程服务和未明确授权的 Definition Query 子集默认跳过；并保存 `mxd-export-manifest.json`。不会修改/保存原 MXD；导出的 LYR 仍可能指向原数据源，需要用 QGIS 插件将其样式套用到正确 SHP。
+
+### 合成 MXD 验证
+
+本机**没有可用 ArcMap/ArcPy**，因此当前无法凭空生成真实的二进制 MXD，也不能把重命名的 JSON 或模拟文件作为测试成功。工作台另外提供 `arcmap_create_synthetic_mxd.py`；它在真正装有 ArcMap 10.x 的离线机器上，使用**有效的空白 MXD 模板**创建数学点/线/面 SHP 并保存真实 MXD：
+
+```powershell
+python arcmap_create_synthetic_mxd.py "D:\ArcMap\blank.mxd" "D:\LocalGIS\synthetic-mxd-new"
+```
+
+新目录须不存在。源代码已通过模拟 ArcPy 调用路径测试；**真实 ArcMap 二进制的端到端验证仍未完成**。
+
+## LYR → SLD（复用 QGIS Style Assistant 0.4.0）
+
+1. 在 QGIS 中安装用户已有的 QGIS Style Assistant 0.4.0，并按其提示安装 SLYR（Community Edition 或具备相应解析许可的版本）。
+2. 先加载正确的数据图层，选择 `.lyr`（或其支持的 `.mxd`）应用原始分类符号，再导出 `.qml` 与 `.sld`。QML 作为 QGIS 复核依据，SLD 供 GeoServer 使用。
+3. 在工作台 **展开高级选项 → 批量 SLD 目录** 选择输出文件夹。**仅允许同名精确匹配**：`fault.shp` 必须配 `fault.sld`。缺少、大小写冲突或异常大的 SLD 会在本地预检阶段阻断。
+4. GDB 字段缩短后，SLD 分类字段仍可能引用原字段名；必须依据 `字段对照.csv` 重新匹配。**目前尚未实现任意 QGIS/SLYR 表达式的安全自动重写。**
+5. 发布后必须检查实际 WMS 地图、图例、分类颜色、线型、标注与比例尺。QML/SLD 文件成功生成不代表 GeoServer 视觉上完全等价。
+
+参考：GDAL [OpenFileGDB](https://gdal.org/en/stable/drivers/vector/openfilegdb.html)、[Shapefile](https://gdal.org/en/stable/drivers/vector/shapefile.html)；SLYR [GeoServer 样式限制](https://slyr.north-road.com/user_guide/limitations)。
+
+## 当前验收边界
+
+- 已用 GDAL 3.13.3 对**用户指定的本机测试 FileGDB**进行实际元数据读取和批量 SHP 导出；全部数据及字段对照只留在 D 盘，不提交仓库，也不上传公网。
+- 已有真实 SHP 成功产物；个别源数据 OpenFileGDB 索引读取异常被明确记录，没有采用忽略错误继续转换的策略。
+- MXD/LYR 的模拟调用与辅助脚本可测试，但本机未安装 ArcMap/QGIS，因此**真实 ArcMap MXD → QGIS LYR → SLD 的最终集成需要具备这些软件的离线环境**。
+- 生成的 SHP 尚未自动发布到生产 GeoServer；现有 GeoPublisher 的正式发布功能仍需由授权人员按环境确认后执行。

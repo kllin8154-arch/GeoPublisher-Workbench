@@ -18,7 +18,6 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QImage  # noqa: E402
-from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from geopublisher import desktop  # noqa: E402
@@ -67,9 +66,13 @@ def window(app, tmp_path):
 
 def wait_until(app, predicate, *, timeout=5):
     deadline = time.monotonic() + timeout
+    # Pump queued GUI signals without entering QTest.qWait's nested Qt loop.
+    # A Qt timer/event race there can itself block longer than the deadline.
     while not predicate() and time.monotonic() < deadline:
         app.processEvents()
-        QTest.qWait(5)
+        if predicate():
+            break
+        time.sleep(0.005)
     app.processEvents()
     assert predicate(), "The UI did not reach the expected state."
 
@@ -773,3 +776,46 @@ def test_style_remap_opt_in_exposed_in_cli_and_hidden_by_default(window):
         "--output", "D:/synthetic/fresh-plan", "--sld-directory", "D:/synthetic/styles",
     ])
     assert without_opt.remap_sld_fields is False
+
+
+def test_repeated_short_background_workers_clear_thread_state_without_stale_callbacks(window, app):
+    """Stress real Qt thread transitions; no GeoServer or filesystem access."""
+    completed: list[int] = []
+    worker_loop_levels: list[int] = []
+    for iteration in range(16):
+        def work(on_event, index=iteration):
+            worker_loop_levels.append(desktop.QThread.currentThread().loopLevel())
+            on_event({"stage": "synthetic", "text": "后台任务完成"})
+            return {"sequence": index}
+
+        window._start_worker(work, lambda result: completed.append(result["sequence"]))
+        wait_until(app, lambda: window._thread is None, timeout=6)
+        assert completed == list(range(iteration + 1))
+        assert window._worker is None
+        assert window._worker_success is None
+        assert window.inspect_button.isEnabled()
+        assert window.settings_nav.isEnabled()
+    assert len(worker_loop_levels) == 16
+    assert all(level >= 1 for level in worker_loop_levels), (
+        "A Qt worker ran before its event loop started."
+    )
+    assert not window._work_dir.exists()
+
+
+def test_repeated_background_worker_failure_does_not_leave_busy_state(window, app, monkeypatch):
+    """A failed worker must surface a safe message and finish its QThread."""
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: warnings.append("seen"))
+    for iteration in range(6):
+        def work(_event):
+            raise DatasetError("SYNTHETIC_WORKER_ERROR", "本地数学检查未完成")
+
+        window._start_worker(work, window.review_plan)
+        wait_until(app, lambda: window._thread is None, timeout=6)
+        assert warnings == ["seen"] * (iteration + 1)
+        assert window._worker is None
+        assert window._worker_success is None
+        assert "SYNTHETIC_WORKER_ERROR" in window.activity.text()
+        assert window.inspect_button.isEnabled()
+        assert window.settings_nav.isEnabled()
+    assert not window._work_dir.exists()

@@ -1055,3 +1055,35 @@ def test_conversion_dialog_exposes_direct_mxd_and_lyr_actions(window, monkeypatc
     assert any("直接转换 MXD" in label for label in labels)
     assert any("直接转换 LYR" in label for label in labels)
     assert any("GDB 批量转换" in label for label in labels)
+
+
+
+def test_business_tree_button_generates_blocked_review_package_offline(window, tmp_path, monkeypatch):
+    """UI shows a usable catalog action but cannot bypass absent WMS evidence."""
+    example = Path(__file__).parents[1] / "examples" / "business-tree.example.json"
+    assert example.is_file()
+    opened = []
+    warnings = []
+    monkeypatch.setattr(
+        desktop.QFileDialog, "getOpenFileName",
+        lambda *_args, **_kwargs: (str(example), "JSON (*.json)"),
+    )
+    monkeypatch.setattr(
+        desktop.QFileDialog, "getExistingDirectory",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda *_args, **_kwargs: warnings.append("review required"),
+    )
+    monkeypatch.setattr(desktop.QDesktopServices, "openUrl", lambda uri: opened.append(uri))
+    assert "比例尺" in window.business_tree_button.text()
+    window.business_tree_button.click()
+    assert warnings == ["review required"]
+    outputs = list(tmp_path.glob("catalog-tree-*"))
+    assert len(outputs) == 1
+    assert opened
+    sql = (outputs[0] / "02_register_BLOCKED.sql").read_text(encoding="utf-8")
+    assert "RAISE EXCEPTION" in sql
+    assert "INSERT INTO" not in sql
+    assert (outputs[0] / "business_tree_review.json").is_file()

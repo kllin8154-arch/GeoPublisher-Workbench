@@ -150,3 +150,18 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
 | `cli.py` / `desktop.py` | 共享核心的命令行与桌面入口 |
 
 开发约束见 [AGENTS.md](AGENTS.md) 和 [执行边界](SECURITY.md)。仓库只接收代码、说明和合成样本生成器，不接收真实空间数据、现场环境档案或凭据。
+
+
+## 多级业务目录与比例尺图幅（2026-11）
+
+原有目录 SQL 生成器用于简单的服务与图层登记。新增 **业务分类 / 比例尺 SQL** 用于多级树结构，例如“基础地质 → 1:5万基础地质图 → 某图幅”，或者“底图 → 世界影像”。它不会把所有业务图层强行放到 baseMap，也不自动更改既有父节点。
+
+入口：桌面“发布任务 → 业务分类 / 比例尺 SQL”，或 CLI：
+
+    uv run --frozen --no-sync geopub catalog-tree examples/business-tree.example.json --output D:\LocalGIS\catalog-tree-review-new
+
+示例中的所有图层、表名及比例尺均为虚构测试，默认未完成 WMS 验收，因此只生成阻断版 SQL，不会得到可误执行的 INSERT。真实业务需先在已授权的数据库只读核对现有分类/服务关系，再填写实际映射，提供目标 GeoServer 的真实 WMS PNG 和人工审核结果。**生成 SQL 不意味着已执行数据库操作**。
+
+支持的处理链路：本机 MXD→SHP/LYR、GDB→SHP、LYR→SLD、SHP/单幅 GeoTIFF 正式发布、WMS/WFS 实图验收，然后生成可审核的多级业务节点 SQL。ImageMosaic/ImagePyramid 暂保留为独立的受控服务器流程，不能通过单幅 TIFF 发布引擎伪装成镶嵌服务。
+
+完整说明：[通用 GIS 转换、发布及业务目录 SQL 工作流](docs/BUSINESS-CATALOG-WORKFLOW.md)。

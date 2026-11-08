@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "target_schema": "example_schema",
+  "schema_verified": false,
+  "tables": {
+    "service": "example_mapservice",
+    "node": "example_maplayer"
+  },
+  "columns": {
+    "service": {
+      "key": "name",
+      "title": "namec",
+      "kind": "maptype",
+      "platform": "platform",
+      "url": "url",
+      "layer": "layer",
+      "crs": "crs",
+      "format": "format",
+      "memo": "memo",
+      "organization": "ssdw"
+    },
+    "node": {
+      "sys": "sys",
+      "key": "code",
+      "title": "namec",
+      "parent": "glcode",
+      "kind": "type",
+      "display_order": "disporder",
+      "visible": "visible",
+      "zoom_start": "zooms",
+      "zoom_end": "zoome",
+      "service_reference": "svr_name",
+      "layer_index": "lay_idx",
+      "memo": "memo",
+      "organization": "ssdw"
+    }
+  },
+  "defaults": {
+    "sys": "0",
+    "wms_url": "geoserver/demo/wms",
+    "workspace": "demo",
+    "platform": "geoserver",
+    "organization": 0
+  },
+  "existing_parents": [
+    {"code": "existing_basemap", "title": "示例底图目录"}
+  ],
+  "groups": [
+    {
+      "code": "example_base_geology",
+      "title": "基础地质",
+      "parent": null,
+      "display_order": 30,
+      "layer_index": 30
+    },
+    {
+      "code": "example_geology_50k",
+      "title": "1:5万基础地质图",
+      "parent": "example_base_geology",
+      "scale": "1:5万",
+      "display_order": 10,
+      "layer_index": 10
+    },
+    {
+      "code": "example_geology_200k",
+      "title": "1:20万基础地质图",
+      "parent": "example_base_geology",
+      "scale": "1:20万",
+      "display_order": 20,
+      "layer_index": 20
+    },
+    {
+      "code": "example_world",
+      "title": "世界影像",
+      "parent": "existing_basemap",
+      "display_order": 80,
+      "layer_index": 1
+    }
+  ],
+  "layers": [
+    {
+      "code": "demo_sheet_50k_a",
+      "title": "示例五万地质图 A",
+      "parent": "example_geology_50k",
+      "service_key": "demo_50k_a",
+      "qualified_name": "demo:demo_50k_a",
+      "source_format": "mxd",
+      "publish_kind": "shapefile",
+      "conversion_reviewed": false,
+      "scale": "1:5万",
+      "crs": "EPSG:4326",
+      "display_order": 10,
+      "layer_index": 10,
+      "zoom_start": 1,
+      "zoom_end": 29,
+      "wms": {"status": "PENDING", "visual_reviewed": false}
+    },
+    {
+      "code": "demo_sheet_200k_b",
+      "title": "示例二十万地质图 B",
+      "parent": "example_geology_200k",
+      "service_key": "demo_200k_b",
+      "qualified_name": "demo:demo_200k_b",
+      "source_format": "gdb",
+      "publish_kind": "shapefile",
+      "conversion_reviewed": false,
+      "scale": "1:20万",
+      "crs": "EPSG:4326",
+      "display_order": 20,
+      "layer_index": 20,
+      "zoom_start": 1,
+      "zoom_end": 29,
+      "wms": {"status": "PENDING", "visual_reviewed": false}
+    },
+    {
+      "code": "demo_world_overview",
+      "title": "示例世界概览",
+      "parent": "example_world",
+      "service_key": "demo_world_overview",
+      "qualified_name": "demo:demo_world_overview",
+      "source_format": "geotiff",
+      "publish_kind": "geotiff",
+      "crs": "EPSG:4326",
+      "display_order": 10,
+      "layer_index": 1,
+      "zoom_start": 1,
+      "zoom_end": 29,
+      "wms": {"status": "PENDING", "visual_reviewed": false}
+    },
+    {
+      "code": "demo_world_mosaic",
+      "title": "示例世界高清镶嵌",
+      "parent": "example_world",
+      "service_key": "demo_world_mosaic",
+      "qualified_name": "demo:demo_world_mosaic",
+      "source_format": "tiff_mosaic",
+      "publish_kind": "imagemosaic",
+      "crs": "EPSG:4326",
+      "display_order": 20,
+      "layer_index": 2,
+      "zoom_start": 1,
+      "zoom_end": 29,
+      "wms": {"status": "PENDING", "visual_reviewed": false}
+    }
+  ]
+}

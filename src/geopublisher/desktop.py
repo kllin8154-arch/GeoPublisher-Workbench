@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -320,12 +321,14 @@ class MainWindow(QMainWindow):
         self.restore_button = QPushButton("恢复任务")
         self.history_button = QPushButton("任务历史")
         self.folder_button = QPushButton("打开任务目录")
+        self.business_tree_button = QPushButton("业务分类 / 比例尺 SQL")
         self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
         for widget in (self.new_button, self.restore_button, self.history_button):
             toolbar.addWidget(widget)
             self._editable.append(widget)
         toolbar.addStretch()
+        toolbar.addWidget(self.business_tree_button)
         toolbar.addWidget(self.help_button)
         toolbar.addWidget(self.folder_button)
         box.addLayout(toolbar)
@@ -333,8 +336,9 @@ class MainWindow(QMainWindow):
         self.restore_button.clicked.connect(self._choose_plan)
         self.history_button.clicked.connect(self._toggle_history)
         self.folder_button.clicked.connect(self._open_output)
+        self.business_tree_button.clicked.connect(self._export_business_tree)
         self.help_button.clicked.connect(self._show_quick_help)
-        self._editable.append(self.help_button)
+        self._editable.extend((self.business_tree_button, self.help_button))
         self.history = QListWidget()
         self.history.setMaximumHeight(130)
         self.history.setVisible(False)
@@ -1683,6 +1687,56 @@ class MainWindow(QMainWindow):
         self._report_path = None
         self.report_button.setEnabled(False)
         self.result_guidance.setText("完成后在这里显示下一步操作建议。")
+
+    def _export_business_tree(self) -> None:
+        """Generate a reviewed multi-level catalog SQL package; never write to DB."""
+        if self._thread is not None:
+            QMessageBox.warning(self, "请完成当前任务", "当前正在检查或发布；请在任务结束后整理业务目录。")
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self, "选择已核对的业务目录与比例尺 JSON", str(self._work_dir),
+            "JSON 配置 (*.json)",
+        )
+        if not source:
+            return
+        root = QFileDialog.getExistingDirectory(
+            self, "选择保存 SQL 的本机目录（会自动创建新子文件夹）", str(self._work_dir)
+        )
+        if not root:
+            return
+        from .business_tree import build_business_tree_sql
+        from .catalog import CatalogError
+
+        output = Path(root) / ("catalog-tree-" + datetime.now().strftime("%Y%m%d-") + uuid.uuid4().hex[:8])
+        try:
+            result = build_business_tree_sql(
+                json.loads(Path(source).read_text(encoding="utf-8-sig")), output
+            )
+        except (CatalogError, ValueError, OSError) as exc:
+            QMessageBox.warning(self, "目录配置未通过检查", str(exc))
+            return
+        blocked = result["status"] != "SQL_GENERATED_NOT_EXECUTED"
+        message = (
+            f"已整理 {result['groups']} 个目录、{result['layers']} 个图幅。"
+            f"\n本地 SQL 目录：{output}\n\n"
+        )
+        if blocked:
+            message += (
+                "存在生产表结构、转换或 WMS 验收未完成的项目。\n"
+                "本次只生成阻断版 SQL、只读核对与预览，不允许直接执行入库。"
+            )
+            QMessageBox.warning(self, "业务目录待验收", message)
+        else:
+            message += (
+                "已生成待人工审核的增量入库 SQL，尚未连接数据库。\n"
+                "执行前请核对现有节点及 WMS 证据，并做好生产备份。"
+            )
+            QMessageBox.information(self, "业务目录 SQL 已生成", message)
+        self.activity.setText(
+            "多级业务目录审核包已保存在本机；"
+            + ("存在待验收项，入库 SQL 已阻断。" if blocked else "仍需审核并单独入库。")
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(output)))
 
     def _show_quick_help(self) -> None:
         QMessageBox.information(

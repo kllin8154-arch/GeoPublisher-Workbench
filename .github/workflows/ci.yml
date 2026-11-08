@@ -48,7 +48,13 @@ jobs:
       - name: Build Windows desktop preview
         if: runner.os == 'Windows'
         run: uv run --frozen --no-sync pyinstaller --noconfirm --clean --windowed --onedir --name GeoPublisher-Workbench --paths src --add-data "src/geopublisher/resources;geopublisher/resources" scripts/desktop_entry.py
-      - name: Upload build artifacts
+      # The repository's Actions artifact quota is currently exhausted.
+      # Keep lint/tests/Windows preview builds as required CI checks, and make
+      # large preview uploads an explicit maintenance opt-in only.
+      # Once storage is cleared, set repository variable
+      # GEOPUBLISHER_UPLOAD_PREVIEWS=true and run workflow_dispatch.
+      - name: Upload build artifacts (manual opt-in)
+        if: ${{ github.event_name == 'workflow_dispatch' && vars.GEOPUBLISHER_UPLOAD_PREVIEWS == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: GeoPublisher-preview-${{ runner.os }}

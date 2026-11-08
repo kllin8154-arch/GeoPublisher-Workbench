@@ -120,6 +120,8 @@ def generate_catalog_draft(
     report_file: Path | str | None = None,
 ) -> dict:
     """Create a local editable tree profile and review report, but never SQL writes."""
+    if str(plan_file).startswith(("\\\\", "//")):
+        _missing("发布计划必须位于本地磁盘，不能使用 UNC 共享路径。")
     plan_path = Path(plan_file).expanduser().absolute()
     if (
         str(plan_path).startswith(("\\\\", "//"))
@@ -138,6 +140,8 @@ def generate_catalog_draft(
 
     template = _default_template(workspace)
     if template_file is not None:
+        if str(template_file).startswith(("\\\\", "//")):
+            _missing("业务表映射模板不能位于 UNC 共享路径。")
         path = Path(template_file).expanduser().absolute()
         if str(path).startswith(("\\\\", "//")) or path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
             _missing("业务表映射模板不得使用 UNC 或符号链接。")
@@ -164,6 +168,8 @@ def generate_catalog_draft(
     template["defaults"]["workspace"] = workspace
     template["defaults"]["wms_url"] = f"geoserver/{workspace}/wms"
 
+    if report_file is not None and str(report_file).startswith(("\\\\", "//")):
+        _missing("任务报告不能位于 UNC 共享路径。")
     report_path = Path(report_file).expanduser().absolute() if report_file else plan_path.parent / "report.json"
     reported, report_status = _local_report(plan, report_path)
     template["groups"] = [
@@ -214,6 +220,8 @@ def generate_catalog_draft(
                 "业务表字段、主键序列与现有节点重名情况",
             ],
         })
+    if str(output).startswith(("\\\\", "//")):
+        _missing("不能把目录审阅包写入 UNC 或远程共享路径。")
     output_path = Path(output).expanduser().absolute()
     if (
         str(output_path).startswith(("\\\\", "//"))

@@ -89,3 +89,10 @@ Linux 已验证两个 TIFF 显式确认后形成两个资源、未确认时不�
 PR #1 凭据隔离已通过对应平台验证并合入 `main`（`bb83e77`）。PR #2 的多 TIFF 改动已具备本机双平台与远程 CI 证据，可进入代码审查及受控试用。目录自动接入、完整离线交付及原 PRD 全量功能仍按上表分别验收。
 
 Windows 原文档、旧版 `310 passed, 4 skipped` 和 PR #1 的 `332 passed, 4 skipped` 继续分别保留。后续结果按对应提交追加，不覆盖历史证据。
+
+
+## GitHub Actions 预览产物存储（2026-11-08）
+
+GitHub Actions 在 PR #23 的双平台测试和 Windows 打包均通过后，因仓库 **Artifact storage quota has been hit** 在 `upload-artifact` 阶段失败。这是账户产物存储配额问题，不是程序编译、测试或数据转换失败。
+
+现将完整 Ruff、Qt、全量 pytest、Python wheel 与 Windows PyInstaller 打包检查继续设为 CI 必经步骤。**只有手动运行 `workflow_dispatch` 且仓库变量 `GEOPUBLISHER_UPLOAD_PREVIEWS=true` 时才上传产物**，避免自动持续占用存储；本机 D 盘便携版构建和验收不受影响。若后续需要重新开放 GitHub 构建包，先从仓库设置检查 Actions 产物占用与保留策略，不自动清除历史构建证据。

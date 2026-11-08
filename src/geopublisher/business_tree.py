@@ -117,13 +117,15 @@ def _select_nodes(raw: dict) -> tuple[list[dict], list[dict], list[dict]]:
         keys.add(node["code"])
     for group in groups:
         _exact_keys(group, {"code", "title", "parent", "display_order", "layer_index"},
-                    {"scale"}, "group")
+                    {"scale", "classification_reviewed"}, "group")
         _key(group["code"], "group.code")
         _is_text(group["title"], "group.title")
         if group["parent"] is not None:
             _key(group["parent"], "group.parent")
         if "scale" in group:
             _is_text(group["scale"], "group.scale")
+        if "classification_reviewed" in group and not isinstance(group["classification_reviewed"], bool):
+            _reject("INVALID_CLASSIFICATION_REVIEW", "classification_reviewed 必须是布尔值。")
         _num(group["display_order"], "group.display_order")
         _num(group["layer_index"], "group.layer_index")
         if group["code"] in keys:
@@ -134,12 +136,14 @@ def _select_nodes(raw: dict) -> tuple[list[dict], list[dict], list[dict]]:
             "code", "title", "parent", "service_key", "qualified_name", "source_format",
             "publish_kind", "crs", "display_order", "layer_index", "zoom_start", "zoom_end",
             "wms",
-        }, {"scale", "conversion_reviewed", "service_mode"}, "layer")
+        }, {"scale", "conversion_reviewed", "service_mode", "classification_reviewed"}, "layer")
         for k in ("code", "service_key", "qualified_name", "parent"):
             _key(layer[k], "layer." + k)
         _is_text(layer["title"], "layer.title")
         if "scale" in layer:
             _is_text(layer["scale"], "layer.scale")
+        if "classification_reviewed" in layer and not isinstance(layer["classification_reviewed"], bool):
+            _reject("INVALID_CLASSIFICATION_REVIEW", "classification_reviewed 必须是布尔值。")
         for k in ("display_order", "layer_index", "zoom_start", "zoom_end"):
             _num(layer[k], "layer." + k)
         if layer["zoom_start"] > layer["zoom_end"]:
@@ -326,7 +330,14 @@ def build_business_tree_sql(config: dict, output: Path | str) -> dict:
     verified: list[dict] = []
     if not raw["schema_verified"]:
         blocked.append("生产业务表、序列及字段结构尚未完成只读核验")
+    for group in groups:
+        if group["code"] == "draft_unclassified":
+            blocked.append("仍存在待分类的临时目录，请移至实际专题/比例尺并删除本分组")
+        if group.get("classification_reviewed") is False:
+            blocked.append(f"{group['code']}：专题或比例尺目录尚未人工核对")
     for layer in layers:
+        if layer.get("classification_reviewed") is False:
+            blocked.append(f"{layer['code']}：业务分类和父节点尚未人工核对")
         wms = layer["wms"]
         if layer["source_format"] in {"mxd", "gdb"} and layer.get("conversion_reviewed") is not True:
             blocked.append(f"{layer['code']}：MXD/GDB 转换与字段/样式映射尚未人工核验")

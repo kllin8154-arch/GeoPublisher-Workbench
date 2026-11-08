@@ -70,6 +70,10 @@ def parser() -> argparse.ArgumentParser:
     tree = sub.add_parser("catalog-tree", help="离线生成专题/比例尺/图幅多级目录 SQL，不连接数据库")
     tree.add_argument("profile", type=Path, help="经业务人员核对的目录、比例尺与 GeoServer 图层映射 JSON")
     tree.add_argument("--output", type=Path, required=True, help="全新输出文件夹")
+    draft = sub.add_parser("catalog-draft", help="从已有发布任务 plan.json 提取待分类业务图幅清单（纯离线）")
+    draft.add_argument("plan", type=Path, help="已生成并有计划哈希的任务 plan.json")
+    draft.add_argument("--template", type=Path, help="可选：仅复用已知的目标表/字段模板，不复用旧图层")
+    draft.add_argument("--output", type=Path, required=True, help="全新本机目录，不得位于原任务目录内")
     return root
 
 
@@ -215,6 +219,11 @@ def main(argv=None) -> int:
                     if args.task
                     else journal.list_tasks()
                 )
+            return 0
+        if args.command == "catalog-draft":
+            from .catalog_draft import generate_catalog_draft
+
+            _print(generate_catalog_draft(args.plan, args.output, template_file=args.template))
             return 0
         if args.command == "catalog-tree":
             from .business_tree import build_business_tree_sql

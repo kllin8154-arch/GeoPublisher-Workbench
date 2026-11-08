@@ -165,3 +165,12 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
 支持的处理链路：本机 MXD→SHP/LYR、GDB→SHP、LYR→SLD、SHP/单幅 GeoTIFF 正式发布、WMS/WFS 实图验收，然后生成可审核的多级业务节点 SQL。ImageMosaic/ImagePyramid 暂保留为独立的受控服务器流程，不能通过单幅 TIFF 发布引擎伪装成镶嵌服务。
 
 完整说明：[通用 GIS 转换、发布及业务目录 SQL 工作流](docs/BUSINESS-CATALOG-WORKFLOW.md)。
+
+
+### 从已发布任务生成业务目录初稿
+
+无需手填每个 GeoServer 图层名。桌面 **“业务分类 / 比例尺 SQL”** 选择任务文件 plan.json，会离线生成待人工分类的 business_tree_draft.json；选择已有目录 JSON 则进入 SQL 审查生成。CLI 同样支持：
+
+    uv run --frozen --no-sync geopub catalog-draft D:\LocalGIS\task-xxx\plan.json --output D:\LocalGIS\catalog-draft-new
+
+新初稿**不会猜测比例尺或父节点**，所有图层先放入 draft_unclassified，强制未审核，不能直接写入数据库。对已完成 WMS 的发布结果，仅预填任务内有效 PNG 的位置，仍需业务人员检查视觉、样式、真实数据来源与目录归属。完整流程见 [业务分类与比例尺工作流](docs/BUSINESS-CATALOG-WORKFLOW.md)。

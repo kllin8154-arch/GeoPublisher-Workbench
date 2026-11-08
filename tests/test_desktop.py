@@ -1087,3 +1087,52 @@ def test_business_tree_button_generates_blocked_review_package_offline(window, t
     assert "RAISE EXCEPTION" in sql
     assert "INSERT INTO" not in sql
     assert (outputs[0] / "business_tree_review.json").is_file()
+
+
+
+def test_business_tree_button_can_make_unclassified_draft_from_existing_plan(
+    window, tmp_path, monkeypatch
+):
+    """A matching plan.json becomes an offline review draft, never SQL INSERT."""
+    from geopublisher.plans import fingerprint
+
+    source = tmp_path / "synthetic-original-publish"
+    source.mkdir()
+    plan = {
+        "schema_version": 1,
+        "task_id": "00000000-0000-0000-0000-000000000001",
+        "environment": window.environment().to_dict(),
+        "ready": False, "enable_wfs": False,
+        "strategy": "fail", "output_dir": str(source),
+        "resources": [{
+            "resource_id": "r0001", "target_name": "synthetic_test_frame",
+            "store_name": "synthetic_test_frame_store",
+            "style_name": "synthetic_test_frame_style",
+            "kind": "shapefile", "inspection": {"crs": "EPSG:4490"},
+            "blocking_errors": [],
+        }],
+    }
+    plan["plan_hash"] = fingerprint(plan)
+    file = source / "plan.json"
+    file.write_text(json.dumps(plan), encoding="utf-8")
+    prompts = []
+    opened = []
+    monkeypatch.setattr(desktop.QFileDialog, "getOpenFileName",
+                        lambda *_args, **_kwargs: (str(file), "JSON"))
+    monkeypatch.setattr(desktop.QFileDialog, "getExistingDirectory",
+                        lambda *_args, **_kwargs: str(tmp_path))
+    monkeypatch.setattr(QMessageBox, "information",
+                        lambda *_args, **_kwargs: prompts.append("created"))
+    monkeypatch.setattr(desktop.QDesktopServices, "openUrl",
+                        lambda uri: opened.append(uri))
+
+    window.business_tree_button.click()
+    assert prompts == ["created"]
+    assert opened
+    draft_folders = list(tmp_path.glob("catalog-draft-*"))
+    assert len(draft_folders) == 1
+    draft = json.loads((draft_folders[0] / "business_tree_draft.json").read_text("utf-8"))
+    assert draft["layers"][0]["crs"] == "EPSG:4490"
+    assert draft["layers"][0]["wms"]["status"] == "PENDING"
+    assert draft["groups"][0]["code"] == "draft_unclassified"
+    assert not list(draft_folders[0].glob("*.sql"))

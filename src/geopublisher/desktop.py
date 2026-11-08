@@ -322,6 +322,7 @@ class MainWindow(QMainWindow):
         self.history_button = QPushButton("任务历史")
         self.folder_button = QPushButton("打开任务目录")
         self.business_tree_button = QPushButton("业务分类 / 比例尺 SQL")
+        self.business_tree_button.setToolTip("选择发布任务 plan.json 自动整理待分类图幅；或选择业务目录 JSON 生成审核 SQL。")
         self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
         for widget in (self.new_button, self.restore_button, self.history_button):
@@ -1694,7 +1695,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "请完成当前任务", "当前正在检查或发布；请在任务结束后整理业务目录。")
             return
         source, _ = QFileDialog.getOpenFileName(
-            self, "选择已核对的业务目录与比例尺 JSON", str(self._work_dir),
+            self, "选择发布任务 plan.json 或已核对的业务目录 JSON", str(self._work_dir),
             "JSON 配置 (*.json)",
         )
         if not source:
@@ -1706,6 +1707,26 @@ class MainWindow(QMainWindow):
             return
         from .business_tree import build_business_tree_sql
         from .catalog import CatalogError
+
+        if Path(source).name == "plan.json":
+            from .catalog_draft import generate_catalog_draft
+
+            draft_dir = Path(root) / ("catalog-draft-" + datetime.now().strftime("%Y%m%d-") + uuid.uuid4().hex[:8])
+            try:
+                draft = generate_catalog_draft(source, draft_dir)
+            except (CatalogError, ConfigError, ValueError, OSError) as exc:
+                QMessageBox.warning(self, "无法从任务整理目录", str(exc))
+                return
+            self.activity.setText("已生成待分类业务图幅清单；请人工选择专题、比例尺与现有父节点。")
+            QMessageBox.information(
+                self, "图幅目录初稿已生成",
+                f"已整理 {draft['layer_count']} 个图层。\n\n"
+                f"本地文件：{draft['draft']}\n\n"
+                "初稿不会连接数据库或 GeoServer，所有图层仍处于未分类、未验收状态。"
+                "请根据真实业务目录、转换报告和 WMS 实图填写后，再生成 SQL。",
+            )
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(draft_dir)))
+            return
 
         output = Path(root) / ("catalog-tree-" + datetime.now().strftime("%Y%m%d-") + uuid.uuid4().hex[:8])
         try:

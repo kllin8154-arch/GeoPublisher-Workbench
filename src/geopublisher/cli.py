@@ -67,6 +67,9 @@ def parser() -> argparse.ArgumentParser:
     catalog.add_argument("bindings", type=Path)
     catalog.add_argument("--mapping", type=Path, required=True)
     catalog.add_argument("--output", type=Path, required=True)
+    tree = sub.add_parser("catalog-tree", help="离线生成专题/比例尺/图幅多级目录 SQL，不连接数据库")
+    tree.add_argument("profile", type=Path, help="经业务人员核对的目录、比例尺与 GeoServer 图层映射 JSON")
+    tree.add_argument("--output", type=Path, required=True, help="全新输出文件夹")
     return root
 
 
@@ -213,6 +216,14 @@ def main(argv=None) -> int:
                     else journal.list_tasks()
                 )
             return 0
+        if args.command == "catalog-tree":
+            from .business_tree import build_business_tree_sql
+
+            result = build_business_tree_sql(
+                json.loads(args.profile.read_text(encoding="utf-8-sig")), args.output
+            )
+            _print(result)
+            return 0 if result["status"] == "SQL_GENERATED_NOT_EXECUTED" else 3
         if args.command == "catalog":
             from .catalog import generate_catalog
 

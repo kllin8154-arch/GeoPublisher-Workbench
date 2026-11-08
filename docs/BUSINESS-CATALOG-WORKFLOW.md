@@ -80,3 +80,22 @@ CLI（本地离线生成）：
 ## 六、后续可能扩展
 
 可进一步把已经完成的任务日志与 WMS 验证报告映射成业务目录 JSON 初稿，自动提出需要归类的每个图层，再由人员确认父目录、专题、比例尺；以及在完成安全与实际环境测试后加入正式 ImageMosaic/ImagePyramid 发布适配。
+
+
+## 从 GeoServer 发布任务自动生成图幅分类初稿
+
+完成“选择数据 → 本地检查 → 确认发布”后，可以使用原有任务文件自动整理图幅，而不必重新手填所有服务层名。
+
+桌面：进入 **发布任务 → 业务分类 / 比例尺 SQL**，选择原任务中的 plan.json；工作台会生成全新 catalog-draft-* 文件夹，包含 business_tree_draft.json（待编辑）和 draft_review.json（逐层待确认事项）。也可以选择一份已经核实的业务目录 JSON，在同一入口生成 SQL。
+
+CLI：
+
+    geopub catalog-draft D:\LocalGIS\task-123\plan.json --output D:\LocalGIS\catalog-draft-new
+
+如有经审核的业务表名/字段模板，可带 --template D:\LocalGIS\site-reviewed-schema.json。它仅预填表与列的候选值，**始终重置 schema_verified=false**，也不会继承模板中的已存在父目录或图层：避免把上一现场目录套到新现场。
+
+自动提取的仅有：发布任务 ID、受控工作空间名、限定图层名、SHP/独立 GeoTIFF 类型、明确的 EPSG 编码。若任务目录下的 report.json 与计划完全匹配、该图层记录为 SUCCEEDED 且真实预览路径位于任务目录内，可附带 PNG 位置供人工复核；不会自动将 WMS 状态改为 PASSED。
+
+所有图幅初始均属于 draft_unclassified，且 classification_reviewed=false、WMS=PENDING。即使操作员直接改为 WMS=PASSED，**临时未分类目录仍会永久阻断数据库 INSERT**；必须把图幅移动至真实专题/比例尺父目录，删除临时组，并单独完成 WMS、业务结构与数据来源核验，才可生成审核 SQL。
+
+源数据可能先经 MXD/GDB→SHP 导出。plan.json 仅能证明发布的 SHP，并不能恢复原 GDB/MXD 来源的全部业务信息；请依照转换报告与原图层清单进行复核。生成器不会猜测比例尺、坐标系转换或业务分类，也不会接触 GeoServer/数据库、网络或远程文件共享。

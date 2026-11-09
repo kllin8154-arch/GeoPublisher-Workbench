@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -241,6 +242,7 @@ class MainWindow(QMainWindow):
         self._connection_testing = False
         self._pending_gdb_conversion = None
         self._offline_running = False
+        self._server_deploy_running = False
         self._offline_report_path: Path | None = None
         self._close_when_idle = False
         self._building_forms = True
@@ -322,6 +324,12 @@ class MainWindow(QMainWindow):
         self.history_button = QPushButton("任务历史")
         self.folder_button = QPushButton("打开任务目录")
         self.business_tree_button = QPushButton("业务分类 / 比例尺 SQL")
+        self.server_deploy_button = QPushButton("Linux 服务器部署")
+        self.server_cancel_button = QPushButton("取消当前 SFTP 传输")
+        self.server_cancel_button.hide()
+        self.server_cancel_button.setEnabled(False)
+        self.server_cancel_button.clicked.connect(lambda: self._cancel.set())
+        self.server_deploy_button.setToolTip("SSH/SFTP 连接与 Linux 本机分阶段交付；不自动修改 GeoServer 或业务数据库。")
         self.business_tree_button.setToolTip("选择发布任务 plan.json 自动整理待分类图幅；或选择业务目录 JSON 生成审核 SQL。")
         self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
@@ -330,6 +338,8 @@ class MainWindow(QMainWindow):
             self._editable.append(widget)
         toolbar.addStretch()
         toolbar.addWidget(self.business_tree_button)
+        toolbar.addWidget(self.server_deploy_button)
+        toolbar.addWidget(self.server_cancel_button)
         toolbar.addWidget(self.help_button)
         toolbar.addWidget(self.folder_button)
         box.addLayout(toolbar)
@@ -338,8 +348,9 @@ class MainWindow(QMainWindow):
         self.history_button.clicked.connect(self._toggle_history)
         self.folder_button.clicked.connect(self._open_output)
         self.business_tree_button.clicked.connect(self._export_business_tree)
+        self.server_deploy_button.clicked.connect(self._server_deploy)
         self.help_button.clicked.connect(self._show_quick_help)
-        self._editable.extend((self.business_tree_button, self.help_button))
+        self._editable.extend((self.business_tree_button, self.server_deploy_button, self.help_button))
         self.history = QListWidget()
         self.history.setMaximumHeight(130)
         self.history.setVisible(False)
@@ -1534,6 +1545,10 @@ class MainWindow(QMainWindow):
         if self._close_when_idle:
             return
         message = f"{error['code']}：{error['message']}"
+        if self._server_deploy_running:
+            self.activity.setText(message)
+            QMessageBox.warning(self, "Linux 服务器阶段未完成", message)
+            return
         if self._offline_running:
             self.activity.setText(message)
             QMessageBox.warning(self, "本地转换未完成", message)
@@ -1559,6 +1574,9 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.cancel_button.setEnabled(False)
         self._offline_running = False
+        self._server_deploy_running = False
+        self.server_cancel_button.hide()
+        self.server_cancel_button.setEnabled(False)
         self.offline_cancel_button.setVisible(False)
         if self._close_when_idle:
             self._pending_gdb_conversion = None
@@ -1688,6 +1706,291 @@ class MainWindow(QMainWindow):
         self._report_path = None
         self.report_button.setEnabled(False)
         self.result_guidance.setText("完成后在这里显示下一步操作建议。")
+
+    def _server_deploy_dialog(self) -> dict | None:
+        """Collect one explicit Linux delivery operation, without saving credentials."""
+        from .server_deploy import LinuxTarget
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Linux 服务器连接 · 局域网 SSH / 本机")
+        dialog.resize(725, 695)
+        layout = QVBoxLayout(dialog)
+        note = QLabel(
+            "这一步仅进行服务器预检、上传校验或解包，不会自动注册 GeoServer 图层或执行数据库 SQL。\n"
+            "只支持局域网私有 IP；必须预先核对服务器 SSH 指纹，未知主机不会自动信任。"
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        form = QFormLayout()
+        mode = QComboBox()
+        mode.addItem("SSH 连接远端 Linux（Windows/macOS/Linux）", "ssh")
+        if sys.platform == "linux":
+            mode.addItem("工作台正在 Linux 服务器本机运行", "local")
+        form.addRow("运行方式", mode)
+        host = QLineEdit()
+        host.setPlaceholderText("例如 192.168.1.20，必须是获授权的内网 IP")
+        form.addRow("服务器内网 IP", host)
+        port = QSpinBox()
+        port.setRange(1, 65535)
+        port.setValue(22)
+        form.addRow("SSH 端口", port)
+        username = QLineEdit()
+        username.setPlaceholderText("现有 Linux SSH 用户")
+        form.addRow("SSH 用户名", username)
+        auth = QComboBox()
+        auth.addItem("本次输入 SSH 密码", "password")
+        auth.addItem("SSH 私钥文件", "key")
+        auth.addItem("SSH Agent", "agent")
+        form.addRow("认证方式", auth)
+        password = QLineEdit()
+        password.setEchoMode(QLineEdit.EchoMode.Password)
+        password.setPlaceholderText("仅保存在本次连接内存，不写文件")
+        form.addRow("SSH 密码 / 私钥口令", password)
+        def dialog_path_row(edit: QLineEdit, choose: Callable) -> QWidget:
+            line = QWidget(dialog)
+            row = QHBoxLayout(line)
+            row.setContentsMargins(0, 0, 0, 0)
+            browse = QPushButton("浏览", dialog)
+            browse.clicked.connect(choose)
+            row.addWidget(edit, 1)
+            row.addWidget(browse)
+            return line
+
+        known = QLineEdit(str(Path.home() / ".ssh" / "known_hosts"))
+        form.addRow("已核验的 known_hosts", dialog_path_row(
+            known, lambda: known.setText(QFileDialog.getOpenFileName(
+                dialog, "选择已确认 SSH 公钥的 known_hosts 文件", known.text()
+            )[0] or known.text())
+        ))
+        key = QLineEdit()
+        key.setPlaceholderText("使用密钥时选本地私钥文件")
+        form.addRow("SSH 私钥文件", dialog_path_row(
+            key, lambda: key.setText(QFileDialog.getOpenFileName(
+                dialog, "选择 SSH 私钥", str(Path.home() / ".ssh")
+            )[0] or key.text())
+        ))
+        root = QLineEdit("/srv/geopublisher/releases")
+        form.addRow("Linux 发布包目录", root)
+        geoserver_port = QSpinBox()
+        geoserver_port.setRange(1, 65535)
+        geoserver_port.setValue(8080)
+        form.addRow("GeoServer 本机端口", geoserver_port)
+        archive = QLineEdit()
+        archive.setPlaceholderText("选择经本地转换和 SHA256 审核的 .tar 发布包")
+        form.addRow("本地发布归档", dialog_path_row(
+            archive, lambda: archive.setText(QFileDialog.getOpenFileName(
+                dialog, "选择 GeoServer 发布 tar 文件", str(self._work_dir),
+                "Tar 发布包 (*.tar)"
+            )[0] or archive.text())
+        ))
+        manifest = QLineEdit()
+        manifest.setPlaceholderText("创建 GeoServer 图层前必须核验的栅格映射 .json")
+        form.addRow("GeoServer 发布清单", dialog_path_row(
+            manifest, lambda: manifest.setText(QFileDialog.getOpenFileName(
+                dialog, "选择 GeoServer 栅格发布清单 JSON", str(self._work_dir), "JSON (*.json)"
+            )[0] or manifest.text())
+        ))
+        plan_file = QLineEdit()
+        plan_file.setPlaceholderText("已完成离线检查的发布任务 plan.json（适用于 SHP / 独立 GeoTIFF）")
+        form.addRow("已有发布任务", dialog_path_row(
+            plan_file, lambda: plan_file.setText(QFileDialog.getOpenFileName(
+                dialog, "选择不可变任务 plan.json", str(self._work_dir), "JSON (*.json)"
+            )[0] or plan_file.text())
+        ))
+        gs_user = QLineEdit()
+        form.addRow("GeoServer REST 用户", gs_user)
+        gs_password = QLineEdit()
+        gs_password.setEchoMode(QLineEdit.EchoMode.Password)
+        gs_password.setPlaceholderText("只用于本次连接，不写入配置")
+        form.addRow("GeoServer REST 密码", gs_password)
+        operation = QComboBox()
+        for title, step in (
+            ("1. SSH/Linux 只读预检", "doctor"),
+            ("2. 上传并核对发布包", "stage"),
+            ("3. 核验并解包", "extract"),
+            ("4. GeoServer 只读预检", "geoserver_doctor"),
+            ("5. 创建新 GeoTIFF / ImageMosaic", "publish_raster"),
+            ("6. 发布已有 SHP / 单 GeoTIFF 任务", "publish_plan"),
+        ):
+            operation.addItem(title, step)
+        form.addRow("执行阶段", operation)
+        scroll_contents = QWidget(dialog)
+        scroll_contents.setLayout(form)
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(scroll_contents)
+        layout.addWidget(scroll, 1)
+        actions = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        actions.button(QDialogButtonBox.StandardButton.Ok).setText("执行所选阶段")
+        actions.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        actions.accepted.connect(dialog.accept)
+        actions.rejected.connect(dialog.reject)
+        layout.addWidget(actions)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        try:
+            target = LinuxTarget(
+                mode=mode.currentData(),
+                host=host.text().strip(),
+                port=port.value(),
+                username=username.text().strip(),
+                auth=auth.currentData(),
+                known_hosts=known.text().strip(),
+                key_file=key.text().strip(),
+                root=root.text().strip(),
+                geoserver_port=geoserver_port.value(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "服务器配置未通过检查", str(exc))
+            return None
+        return {
+            "operation": operation.currentData(),
+            "target": target,
+            "password": password.text() if target.auth == "password" else None,
+            "passphrase": password.text() if target.auth == "key" else None,
+            "archive": archive.text().strip(),
+            "plan_file": plan_file.text().strip(),
+            "manifest": manifest.text().strip(),
+            "geoserver_user": gs_user.text().strip(),
+            "geoserver_password": gs_password.text(),
+        }
+
+    def _server_deploy(self) -> None:
+        """Run server operations using the existing safe background worker."""
+        if self._thread is not None:
+            QMessageBox.warning(self, "请完成当前操作", "上一个任务正在执行，不能同时传输。")
+            return
+        settings = self._server_deploy_dialog()
+        if not settings:
+            return
+        action = settings["operation"]
+        target = settings["target"]
+        needs_tar = action in {"stage", "extract", "geoserver_doctor", "publish_raster"}
+        if needs_tar and not settings["archive"]:
+            QMessageBox.warning(self, "缺少归档", "请先选择本机受控的 .tar 发布包。")
+            return
+        if action in {"geoserver_doctor", "publish_raster", "publish_plan"}:
+            if not settings["geoserver_user"] or not settings["geoserver_password"]:
+                QMessageBox.warning(self, "缺少 GeoServer 凭据", "请填写 REST 用户及本次使用的密码。")
+                return
+            if action in {"geoserver_doctor", "publish_raster"} and not settings["manifest"]:
+                QMessageBox.warning(self, "缺少栅格发布清单", "请提供已审核的 JSON 清单。")
+                return
+            if action == "publish_plan" and not settings["plan_file"]:
+                QMessageBox.warning(self, "缺少发布任务", "请选择原有的 plan.json。")
+                return
+        if action in {"stage", "extract", "publish_raster", "publish_plan"}:
+            labels = {
+                "stage": "SFTP 上传并校验（不解包）",
+                "extract": "将已校验归档解包到全新 Linux 目录",
+                "publish_raster": "创建 GeoServer 新 GeoTIFF / ImageMosaic 图层",
+                "publish_plan": "执行本地不可变 SHP / 单 GeoTIFF 发布任务",
+            }
+            is_write = action in {"publish_raster", "publish_plan"}
+            source = settings["plan_file"] if action == "publish_plan" else settings["archive"]
+            reply = QMessageBox.question(
+                self, "确认 Linux 服务器操作",
+                f"操作：{labels[action]}\n目标：{target.safe_info()['host']}\n"
+                f"服务器目录：{target.root}\n任务文件：{source}\n\n"
+                + ("本次会修改 GeoServer；不会自动执行数据库 SQL。"
+                   if is_write else "不会修改 GeoServer 或数据库。"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            if is_write:
+                required = "PUBLISH_PLAN_SSH" if action == "publish_plan" else "PUBLISH_GEOSERVER"
+                confirm, ok = QInputDialog.getText(
+                    self, "再次确认 GeoServer 写入",
+                    f"请完整输入 {required} 以确认新图层的创建：",
+                )
+                if not ok or confirm.strip() != required:
+                    return
+        from .server_deploy import (
+            ReleaseArchive,
+            extract_staged,
+            open_target,
+            preflight,
+            stage_archive,
+        )
+
+        def perform(emit):
+            package = ReleaseArchive.inspect(settings["archive"]) if action in {
+                "stage", "extract", "geoserver_doctor", "publish_raster"
+            } else None
+            with open_target(
+                target, password=settings["password"], passphrase=settings["passphrase"],
+            ) as session:
+                if action == "doctor":
+                    return preflight(target, session)
+                if action == "publish_plan":
+                    from .server_plan import publish_plan_via_tunnel
+
+                    return publish_plan_via_tunnel(
+                        target, settings["plan_file"], session,
+                        username=settings["geoserver_user"],
+                        password=settings["geoserver_password"],
+                        on_event=emit, cancel_event=self._cancel,
+                    )
+                if action == "stage":
+                    announced = [-1]
+                    def progress(done, total):
+                        percent = int(100 * done / max(1, total))
+                        if percent // 10 != announced[0]:
+                            announced[0] = percent // 10
+                            emit({"message": f"传输进度 {percent}%（已通过 SSH 加密传输）"})
+                        if self._cancel.is_set():
+                            from .server_deploy import ServerDeployError
+                            raise ServerDeployError(
+                                "TRANSFER_CANCELLED",
+                                "用户终止传输；服务器可能保留 .partial 临时文件，不能自动重试或覆盖。",
+                                outcome_unknown=True,
+                            )
+                    return stage_archive(target, package, session, progress=progress)
+                if action == "extract":
+                    return extract_staged(target, package, session)
+                from .server_publish import RasterPublishPlan, deploy_rasters
+
+                plan = RasterPublishPlan.load(settings["manifest"], package)
+                output = self._work_dir / ("raster-publish-" + uuid.uuid4().hex[:12])
+                return deploy_rasters(
+                    target, package, plan, session,
+                    geoserver_username=settings["geoserver_user"],
+                    geoserver_password=settings["geoserver_password"],
+                    output=output, publish=action == "publish_raster",
+                )
+        self._cancel.clear()
+        self._server_deploy_running = True
+        self.server_cancel_button.setVisible(action == "stage")
+        self.server_cancel_button.setEnabled(action == "stage")
+        self.activity.setText("正在执行授权的 Linux 服务器阶段；未知主机指纹将被拒绝。")
+        self._start_worker(perform, self._server_deploy_completed)
+
+    def _server_deploy_completed(self, result: dict) -> None:
+        status = result["status"]
+        label = {
+            "READ_ONLY_PREFLIGHT_OK": "SSH/Linux 环境只读预检通过",
+            "STAGED_VERIFIED_NOT_EXTRACTED": "发布包已传输并完成服务器 SHA256 校验",
+            "EXTRACTED_CHECKSUMS_OK_NOT_PUBLISHED": "服务器已解包并校验 TIFF 清单",
+            "GEOSERVER_READONLY_PREFLIGHT": "GeoServer 版本、工作空间、图层名称已完成只读核查",
+            "PUBLISHED_NEEDS_HUMAN_WMS_REVIEW": "新 GeoServer 图层已创建并生成 WMS 图片；需人工验收",
+            "SUCCEEDED": "发布任务返回成功；请检查图层与前端效果",
+            "REVIEW_REQUIRED": "发布任务完成，但 WMS 地图效果需人工核验",
+            "MANUAL_ACTION_REQUIRED": "服务器写入结果尚不确定；必须核对再继续",
+        }.get(status, status)
+        self.activity.setText(label + "；业务数据库 SQL 仍需单独审核执行。")
+        evidence_path = result.get("audit_directory") or result.get("report_path")
+        extra = f"\n本机审计记录：{evidence_path}" if evidence_path else ""
+        QMessageBox.information(
+            self, "Linux 服务器阶段完成",
+            label + "\n\n目标：" + str(result.get("target", {}).get("host", "本机 Linux"))
+            + "\n目录：" + str(result.get("remote_directory", "尚未解包"))
+            + extra
+            + "\n\n请以阶段状态和实际 GeoServer WMS 验收为准；数据库目录仍未登记。",
+        )
 
     def _export_business_tree(self) -> None:
         """Generate a reviewed multi-level catalog SQL package; never write to DB."""

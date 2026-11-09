@@ -70,3 +70,17 @@ ImageMosaic/harvest、PostGIS/GeoPackage/FileGDB、业务库自动写入、ArcGI
 - [x] 默认所有图层放在 draft_unclassified，转换来源、专题、比例尺、现有父节点都需人工确认；未删除临时目录永远无法生成可执行登记 SQL。
 - [x] 支持 CLI catalog-draft 与桌面“业务分类 / 比例尺 SQL”一键选择任务生成初稿。拒绝 UNC/软链接输出和已存在目录。
 - [ ] 可视化的业务目录拖放树编辑器、从 206 只读拉取真实目录并进行现场审阅。
+
+
+## 局域网远端 GeoServer 发布阶段（2026-11）
+
+- [x] 统一 SSH/SFTP 与 Linux 本机交付适配，私网 IP 白名单、已核验 known_hosts、会话级密码/私钥口令和拒绝符号链接。
+- [x] 带进度的独占上传、存储空间预检、归档 SHA256 与 manifest 文件数校验、全新目录安全解包；拒绝覆盖。
+- [x] 固定 GeoServer loopback SSH 隧道；本机 Linux 直接使用 localhost；其他服务转发拒绝。
+- [x] 服务端 GeoTIFF 与 ImageMosaic 官方 REST 新存储登记、WMS PNG、granule 数量检查与审计日志。
+- [x] SHP/单 GeoTIFF 不可变 plan.json 复用既有 SQLite journal、SLD、WMS/WFS 检查，强制与 SSH 服务器地址精确匹配。
+- [x] 桌面一步一阶段连接、预检、传输、解包、REST 注册及现有任务发布；写入操作二次确认；SFTP 可请求中止并保留 .partial 以便核对。
+- [x] Windows 本机隔离 GeoServer 2.24.4/JDK17 真正验证合成 GeoTIFF + 8 分幅 ImageMosaic WMS；不传外部资料。
+- [ ] 目标 208 SSH 主机密钥/运行态/JDK 进程/插件、实际目录权限、服务器 SHA256 和真实 WMS 的现场验证与授权发布。
+- [ ] 目标 206 数据库真实字段/父节点只读核验、正式业务分类 SQL 执行与前端验收（当前仍阻断自动写入）。
+- [ ] macOS 原生安装包、Linux wheel 离线部署包、服务器侧跨连接断点续传。

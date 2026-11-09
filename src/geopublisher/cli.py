@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 from pathlib import Path
@@ -74,12 +75,161 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("plan", type=Path, help="已生成并有计划哈希的任务 plan.json")
     draft.add_argument("--template", type=Path, help="可选：仅复用已知的目标表/字段模板，不复用旧图层")
     draft.add_argument("--output", type=Path, required=True, help="全新本机目录，不得位于原任务目录内")
+    for verb, help_text in (
+        ("server-doctor", "通过已验证主机密钥的 SSH 或 Linux 本机方式，只读检查发布服务器"),
+        ("server-stage", "SFTP/本地复制 tar 到 Linux 发布目录并校验 SHA256；不发布 GeoServer"),
+        ("server-extract", "将已校验的 tar 解包到 Linux 全新目录；不运行脚本、不执行 SQL"),
+    ):
+        command = sub.add_parser(verb, help=help_text)
+        command.add_argument("--profile", type=Path, required=True, help="本机连接配置 JSON（不含密码）")
+        if verb != "server-doctor":
+            command.add_argument("--archive", type=Path, required=True, help="完整、不可修改的本地 tar 发布包")
+            command.add_argument("--yes", action="store_true", help="已明确批准对所列服务器执行当前阶段")
+    for verb, help_text in (
+        ("server-geoserver-doctor", "经 SSH 隧道或 Linux localhost 验证已解包栅格、GeoServer 版本及名称冲突（只读）"),
+        ("server-publish-raster", "经已验证的 SSH 隧道向 GeoServer 创建新 GeoTIFF/ImageMosaic 图层（需要明确授权）"),
+    ):
+        command = sub.add_parser(verb, help=help_text)
+        command.add_argument("--profile", type=Path, required=True)
+        command.add_argument("--archive", type=Path, required=True)
+        command.add_argument("--manifest", type=Path, required=True, help="经过人工审核的服务器栅格/GeoServer 映射 JSON")
+        command.add_argument("--geoserver-user", required=True, help="已有 REST 管理用户（密码在终端交互输入）")
+        if verb == "server-publish-raster":
+            command.add_argument("--output", type=Path, required=True, help="全新本机 WMS 验收与审计目录")
+            command.add_argument("--yes", action="store_true", help="已审核并明确批准创建所列 GeoServer 图层")
+    server_plan = sub.add_parser(
+        "server-publish-plan",
+        help="通过已验证 SSH 回环隧道执行不可变 SHP/独立 GeoTIFF 发布计划（保留原任务日志）",
+    )
+    server_plan.add_argument("--profile", type=Path, required=True)
+    server_plan.add_argument("--plan", type=Path, required=True)
+    server_plan.add_argument("--geoserver-user", required=True)
+    server_plan.add_argument("--yes", action="store_true", help="已确认计划、目标服务器及新图层")
     return root
 
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "server-publish-plan":
+            from .server_deploy import LinuxTarget, open_target
+            from .server_plan import publish_plan_via_tunnel, validate_server_binding
+
+            profile = LinuxTarget.load(args.profile)
+            plan = load_plan(args.plan)
+            validate_server_binding(plan, profile)
+            if not args.yes:
+                _print({
+                    "operation": "PUBLISH_IMMUTABLE_PLAN_VIA_SSH",
+                    "target": profile.safe_info(),
+                    "workspace": plan["environment"]["workspace"],
+                    "layer_names": [r["target_name"] for r in plan["resources"]],
+                    "plan_task_id": plan["task_id"],
+                    "business_sql": "NOT_EXECUTED",
+                })
+                if not sys.stdin.isatty() or input(
+                    "请确认上述目标与图层，输入 PUBLISH_PLAN_SSH："
+                ).strip() != "PUBLISH_PLAN_SSH":
+                    return 2
+            if not sys.stdin.isatty():
+                raise ValueError("SSH 和 GeoServer 凭据必须在交互式终端输入。")
+            ssh_password = (
+                getpass.getpass("SSH 登录密码：")
+                if profile.mode == "ssh" and profile.auth == "password" else None
+            )
+            passphrase = (
+                getpass.getpass("SSH 私钥口令（留空表示无）：") or None
+                if profile.mode == "ssh" and profile.auth == "key" else None
+            )
+            rest_password = getpass.getpass("GeoServer REST 密码：")
+            with open_target(profile, password=ssh_password, passphrase=passphrase) as session:
+                result = publish_plan_via_tunnel(
+                    profile, args.plan, session, username=args.geoserver_user,
+                    password=rest_password,
+                )
+            _print(result)
+            return 0 if result["status"] in {"SUCCEEDED", "REVIEW_REQUIRED"} else 3
+        if args.command in {"server-geoserver-doctor", "server-publish-raster"}:
+            from .server_deploy import LinuxTarget, ReleaseArchive, open_target
+            from .server_publish import RasterPublishPlan, deploy_rasters
+
+            target = LinuxTarget.load(args.profile)
+            archive = ReleaseArchive.inspect(args.archive)
+            manifest = RasterPublishPlan.load(args.manifest, archive)
+            will_write = args.command == "server-publish-raster"
+            if will_write and not args.yes:
+                _print({
+                    "action": args.command, "host": target.safe_info(),
+                    "archive_sha256": archive.sha256,
+                    "workspace": manifest.workspace,
+                    "new_layers": [layer.name for layer in manifest.layers],
+                    "database_registration": "NOT_REQUESTED",
+                })
+                if not sys.stdin.isatty() or input(
+                    "输入 PUBLISH_GEOSERVER 批准在目标服务器创建新图层："
+                ).strip() != "PUBLISH_GEOSERVER":
+                    return 2
+            if not sys.stdin.isatty():
+                raise ValueError("服务器发布凭据必须通过交互式终端输入，不能写入配置或命令行。")
+            ssh_pass = (getpass.getpass("SSH 登录密码（不保存）：")
+                        if target.mode == "ssh" and target.auth == "password" else None)
+            ssh_key_pass = (getpass.getpass("SSH 私钥口令（留空表示无）：") or None
+                            if target.mode == "ssh" and target.auth == "key" else None)
+            rest_pass = getpass.getpass("GeoServer REST 密码（不保存）：")
+            with open_target(target, password=ssh_pass, passphrase=ssh_key_pass) as session:
+                result = deploy_rasters(
+                    target, archive, manifest, session,
+                    geoserver_username=args.geoserver_user,
+                    geoserver_password=rest_pass,
+                    output=args.output if will_write else "", publish=will_write,
+                )
+            _print(result)
+            return 0
+        if args.command in {"server-doctor", "server-stage", "server-extract"}:
+            from .server_deploy import (
+                LinuxTarget,
+                ReleaseArchive,
+                extract_staged,
+                open_target,
+                preflight,
+                stage_archive,
+            )
+
+            target = LinuxTarget.load(args.profile)
+            archive = ReleaseArchive.inspect(args.archive) if args.command != "server-doctor" else None
+            if archive is not None:
+                summary = {
+                    "action": args.command, "target": target.safe_info(),
+                    "archive": archive.path.name, "bytes": archive.size,
+                    "sha256": archive.sha256,
+                    "server_publication": "NOT_REQUESTED", "database_registration": "NOT_REQUESTED",
+                }
+                if not args.yes:
+                    _print(summary)
+                    required = "STAGE_TO_LINUX" if args.command == "server-stage" else "EXTRACT_ON_LINUX"
+                    if not sys.stdin.isatty() or input(
+                        f"输入 {required} 以允许此服务器上的当前文件操作："
+                    ).strip() != required:
+                        _print({"status": "NOT_AUTHORIZED", "message": "已取消；未连接服务器。"})
+                        return 2
+            password = None
+            passphrase = None
+            if target.mode == "ssh" and target.auth == "password":
+                if not sys.stdin.isatty():
+                    raise ValueError("SSH 密码方式需要交互式终端；勿用命令行参数传递密码。")
+                password = getpass.getpass("SSH 登录密码（不保存）：")
+            elif target.mode == "ssh" and target.auth == "key":
+                if sys.stdin.isatty():
+                    passphrase = getpass.getpass("SSH 密钥口令（留空表示没有，不保存）：") or None
+            with open_target(target, password=password, passphrase=passphrase) as server:
+                if args.command == "server-doctor":
+                    result = preflight(target, server)
+                elif args.command == "server-stage":
+                    result = stage_archive(target, archive, server)
+                else:
+                    result = extract_staged(target, archive, server)
+            _print(result)
+            return 0
         if args.command == "doctor":
             from .datasets import GdalRuntime
 

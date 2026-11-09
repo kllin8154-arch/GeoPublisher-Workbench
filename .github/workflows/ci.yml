@@ -82,6 +82,6 @@ jobs:
       - name: Lint
         run: uv run --frozen --no-sync ruff check .
       - name: macOS LAN SSH, safe archive, GeoServer REST core
-        run: uv run --frozen --no-sync pytest -q -o faulthandler_timeout=20 tests/test_server_deploy.py tests/test_server_forward.py tests/test_server_plan.py tests/test_server_publish.py
+        run: uv run --frozen --no-sync pytest -q -o faulthandler_timeout=20 tests/test_server_deploy.py tests/test_server_forward.py tests/test_server_plan.py tests/test_server_publish.py tests/test_catalog_live.py
       - name: Build Python wheel
         run: uv run --frozen --no-sync python -m build --no-isolation

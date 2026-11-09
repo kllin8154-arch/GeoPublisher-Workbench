@@ -90,15 +90,15 @@ def gdb_preview_summary(info: dict, *, include_annotations: bool = False) -> str
 def result_next_action(status: str) -> str:
     """A short, actionable explanation without implying business registration."""
     if status == "SUCCEEDED":
-        return "服务已发布并通过基本 WMS 出图检查。请对照源数据核对位置、颜色和透明区域；业务目录尚未登记，需要另行确认 SQL。"
+        return "地图服务已创建，并通过 WMS 基础检查。请打开验收图核对位置、颜色与接缝，再生成目录初稿；业务数据库尚未登记。"
     if status == "REVIEW_REQUIRED":
-        return "地图已返回，但自动检查无法确认内容正确。请检查下方预览与任务报告，人工核对后再用于业务系统。"
+        return "地图已有 WMS 结果，但系统不能保证内容正确。请打开验收图人工核对，确认后再整理目录。"
     if status == "MANUAL_ACTION_REQUIRED":
         return "服务器写入结果可能不确定。不要重新上传或直接删除，请打开报告，先核对服务器中的实际对象。"
     if status == "PARTIAL_SUCCESS":
         return "部分图层已完成。请逐项查看失败原因，保留已有成功结果，核对后再恢复任务。"
     if status == "SKIPPED":
-        return "本次不会更新同名图层。旧图层仍在服务器上，不能把跳过视作新数据发布成功。"
+        return "服务器已有同名图层，本次不会更新。请改名后重新检查；不能把旧图层当作本次发布成功。"
     if status in {"FAILED", "BLOCKED"}:
         return "发布未完成。请查看运行详情和报告，修正数据或环境后再重新检查。"
     if status == "CANCELLED":
@@ -110,15 +110,15 @@ _STATUS_NAMES = {
     "DRAFT": "草稿",
     "READY": "检查通过",
     "RUNNING": "发布中",
-    "SUCCEEDED": "执行成功",
+    "SUCCEEDED": "发布完成",
     "PARTIAL_SUCCESS": "部分完成",
-    "FAILED": "执行未完成",
+    "FAILED": "发布失败",
     "CANCELLED": "已安全取消",
     "MANUAL_ACTION_REQUIRED": "需要人工核对",
     "BLOCKED": "预检未通过",
-    "SKIPPED": "已跳过",
+    "SKIPPED": "未发布（已有同名图层）",
     "ROLLED_BACK": "已清理本次新增资源",
-    "REVIEW_REQUIRED": "需要核对地图",
+    "REVIEW_REQUIRED": "等待看图确认",
 }
 
 
@@ -249,6 +249,8 @@ class MainWindow(QMainWindow):
         self._preview_paths: list[Path] = []
         self._preview_pixmap: QPixmap | None = None
         self._report_path: Path | None = None
+        self._result_catalog_allowed = False
+        self._result_map_allowed = False
         self._editable: list[QWidget] = []
         self._build_ui()
         self._building_forms = False
@@ -347,7 +349,7 @@ class MainWindow(QMainWindow):
         self.restore_button.clicked.connect(self._choose_plan)
         self.history_button.clicked.connect(self._toggle_history)
         self.folder_button.clicked.connect(self._open_output)
-        self.business_tree_button.clicked.connect(self._export_business_tree)
+        self.business_tree_button.clicked.connect(lambda: self._export_business_tree())
         self.server_deploy_button.clicked.connect(self._server_deploy)
         self.help_button.clicked.connect(self._show_quick_help)
         self._editable.extend((self.business_tree_button, self.server_deploy_button, self.help_button))
@@ -574,6 +576,11 @@ class MainWindow(QMainWindow):
         self.result_guidance.setTextFormat(Qt.TextFormat.PlainText)
         self.result_guidance.setWordWrap(True)
         box.addWidget(self.result_guidance)
+        self.result_flow = QLabel("地图服务 → 人工看图 → 未分类目录初稿 → 业务库登记（单独审核）")
+        self.result_flow.setTextFormat(Qt.TextFormat.PlainText)
+        self.result_flow.setWordWrap(True)
+        self.result_flow.setObjectName("muted")
+        box.addWidget(self.result_flow)
         self.preview_selector = QComboBox()
         self.preview_selector.currentIndexChanged.connect(self._select_preview)
         box.addWidget(self.preview_selector)
@@ -603,6 +610,18 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.cancel_button)
         controls.addWidget(self.detail_button)
         controls.addStretch()
+        self.view_wms_button = QPushButton("打开 WMS 验收图")
+        self.view_wms_button.setEnabled(False)
+        self.view_wms_button.clicked.connect(self._open_wms_preview)
+        self.result_catalog_button = QPushButton("生成业务目录初稿")
+        self.result_catalog_button.setObjectName("primary")
+        self.result_catalog_button.setEnabled(False)
+        self.result_catalog_button.clicked.connect(
+            lambda: self._export_business_tree(Path(self._plan["output_dir"]) / "plan.json")
+            if self._plan else None
+        )
+        controls.addWidget(self.view_wms_button)
+        controls.addWidget(self.result_catalog_button)
         controls.addWidget(self.report_button)
         box.addLayout(controls)
         return page
@@ -1353,6 +1372,10 @@ class MainWindow(QMainWindow):
 
     def review_plan(self, plan: dict) -> None:
         self._plan = plan
+        self._result_catalog_allowed = False
+        self._result_map_allowed = False
+        self.view_wms_button.setEnabled(False)
+        self.result_catalog_button.setEnabled(False)
         self.folder_button.setEnabled(True)
         resources = plan.get("resources", [])
         env = plan["environment"]
@@ -1481,6 +1504,11 @@ class MainWindow(QMainWindow):
         self._preview_paths.clear()
         self._preview_pixmap = None
         self._report_path = None
+        self._result_catalog_allowed = False
+        self._result_map_allowed = False
+        self.view_wms_button.setEnabled(False)
+        self.result_catalog_button.setEnabled(False)
+        self.result_flow.setText("① GeoServer：正在发布  →  ② 地图：等待验收\n③ 业务目录：未生成  →  ④ 业务数据库：尚未登记")
         self.report_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
 
@@ -1529,6 +1557,8 @@ class MainWindow(QMainWindow):
         self.offline_report_button.setEnabled(
             not busy and self._offline_report_path is not None
         )
+        self.view_wms_button.setEnabled(not busy and self._result_map_allowed)
+        self.result_catalog_button.setEnabled(not busy and self._result_catalog_allowed)
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if busy else 1)
 
@@ -1633,23 +1663,55 @@ class MainWindow(QMainWindow):
         resources = result.get("resources", [])
         if isinstance(resources, dict):
             resources = list(resources.values())
-        succeeded = sum(isinstance(r, dict) and r.get("status") == "SUCCEEDED" for r in resources)
+        published = [
+            item for item in resources
+            if isinstance(item, dict) and item.get("status") in {"SUCCEEDED", "REVIEW_REQUIRED"}
+        ]
         skipped = sum(isinstance(r, dict) and r.get("status") == "SKIPPED" for r in resources)
-        catalog = result.get("catalog_message") or "业务目录状态请查看任务报告。"
+        observed = {r.get("status") for r in resources if isinstance(r, dict)}
+        display_status = status
+        if "MANUAL_ACTION_REQUIRED" in observed:
+            display_status = "MANUAL_ACTION_REQUIRED"
+        elif status == "SUCCEEDED":
+            if not resources:
+                display_status = "MANUAL_ACTION_REQUIRED"
+            elif observed == {"SKIPPED"}:
+                display_status = "SKIPPED"
+            elif observed - {"SUCCEEDED", "REVIEW_REQUIRED"}:
+                display_status = "PARTIAL_SUCCESS" if published else "FAILED"
+            elif "REVIEW_REQUIRED" in observed:
+                display_status = "REVIEW_REQUIRED"
+        self.result_title.setText(_status_label(display_status))
+        self.result_guidance.setText(result_next_action(str(display_status)))
+        self.activity.setText(f"{_status_label(display_status)}。业务目录和数据库登记仍是独立步骤。")
         self.result_summary.setText(
-            f"{len(resources)} 个资源  ·  {succeeded} 个执行成功  ·  {skipped} 个跳过\n{catalog}"
+            f"本次 {len(resources)} 个图层：{len(published)} 个有发布结果，{skipped} 个同名未发布。"
+            "业务数据库尚未登记。"
         )
-        self.detail_button.setChecked(status != "SUCCEEDED")
+        self.run_log.appendPlainText(result.get("catalog_message") or "业务目录尚未登记。")
+        self._result_catalog_allowed = (
+            display_status in {"SUCCEEDED", "REVIEW_REQUIRED"}
+            and len(published) == len(resources) == len(self._plan["resources"])
+            and {r.get("resource_id") for r in published}
+            == {r["resource_id"] for r in self._plan["resources"]}
+            and result.get("task_id", self._plan["task_id"]) == self._plan["task_id"]
+            and (output / "plan.json").is_file()
+            and (output / "report.json").is_file()
+        )
+        self.detail_button.setChecked(display_status not in {"SUCCEEDED", "REVIEW_REQUIRED"})
         for resource in resources:
             if not isinstance(resource, dict):
                 continue
             name = resource.get("target_name") or resource.get("resource_id") or "地图"
             self.run_log.appendPlainText(f"{name}：{_status_label(resource.get('status', '待核对'))}")
             raw = resource.get("preview_path")
-            if isinstance(raw, str):
+            if resource.get("status") in {"SUCCEEDED", "REVIEW_REQUIRED"} and isinstance(raw, str):
                 preview_paths.append((str(name), Path(raw)))
         # Only inspect this task's known artifact subfolders, never source trees.
+        published_ids = {r.get("resource_id") for r in published}
         for resource in self._plan.get("resources", []):
+            if resource["resource_id"] not in published_ids:
+                continue
             folder = output / resource["resource_id"]
             for name in ("preview.png", "wms.png", "wms-preview.png"):
                 preview_paths.append((resource["target_name"], folder / name))
@@ -1665,11 +1727,34 @@ class MainWindow(QMainWindow):
             seen.add(resolved)
             self._preview_paths.append(resolved)
             self.preview_selector.addItem(name)
+        self._result_map_allowed = bool(self._preview_paths) and bool(published) and (
+            display_status in {"SUCCEEDED", "REVIEW_REQUIRED", "PARTIAL_SUCCESS"}
+        )
+        self.view_wms_button.setEnabled(self._thread is None and self._result_map_allowed)
+        self.result_catalog_button.setEnabled(self._thread is None and self._result_catalog_allowed)
+        self.result_flow.setText(
+            f"① GeoServer：{_status_label(display_status)}  →  "
+            f"② 地图：{'待人工看图' if self._result_map_allowed else '未确认'}\n"
+            f"③ 业务目录：{'可生成未分类初稿' if self._result_catalog_allowed else '待核对'}  →  "
+            "④ 业务数据库：尚未登记（不会自动写入）"
+        )
         if self._preview_paths:
             self._select_preview(0)
         else:
             self.preview.clear()
             self.preview.setText("没有可展示的 WMS 验收图。请查看任务状态和报告。")
+
+    def _open_wms_preview(self) -> None:
+        """Open only the selected PNG saved inside this task; no network request."""
+        index = self.preview_selector.currentIndex()
+        if not self._result_map_allowed or not self._plan or not 0 <= index < len(self._preview_paths):
+            return
+        path = self._preview_paths[index]
+        root = Path(self._plan["output_dir"]).resolve()
+        if path.is_file() and path.resolve().is_relative_to(root):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        else:
+            QMessageBox.warning(self, "验收图不可用", "图片已移动或删除，请查看本次任务报告。")
 
     def _select_preview(self, index: int) -> None:
         if not 0 <= index < len(self._preview_paths):
@@ -1704,6 +1789,11 @@ class MainWindow(QMainWindow):
         self.folder_button.setEnabled(False)
         self.run_log.clear()
         self._report_path = None
+        self._result_catalog_allowed = False
+        self._result_map_allowed = False
+        self.view_wms_button.setEnabled(False)
+        self.result_catalog_button.setEnabled(False)
+        self.result_flow.setText("地图服务 → 人工看图 → 未分类目录初稿 → 业务库登记（单独审核）")
         self.report_button.setEnabled(False)
         self.result_guidance.setText("完成后在这里显示下一步操作建议。")
 
@@ -2092,17 +2182,19 @@ class MainWindow(QMainWindow):
             + "\n\n本工具不会自动执行 206 SQL；请以只读核验、真实 WMS 和人工审核结论为准。",
         )
 
-    def _export_business_tree(self) -> None:
-        """Generate a reviewed multi-level catalog SQL package; never write to DB."""
+    def _export_business_tree(self, source: Path | str | None = None) -> None:
+        """Reuse the existing local draft/SQL flow, never write to DB."""
         if self._thread is not None:
             QMessageBox.warning(self, "请完成当前任务", "当前正在检查或发布；请在任务结束后整理业务目录。")
             return
-        source, _ = QFileDialog.getOpenFileName(
-            self, "选择发布任务 plan.json 或已核对的业务目录 JSON", str(self._work_dir),
-            "JSON 配置 (*.json)",
-        )
-        if not source:
-            return
+        from_result = source is not None
+        if source is None:
+            source, _ = QFileDialog.getOpenFileName(
+                self, "选择发布任务 plan.json 或已核对的业务目录 JSON", str(self._work_dir),
+                "JSON 配置 (*.json)",
+            )
+            if not source:
+                return
         root = QFileDialog.getExistingDirectory(
             self, "选择保存 SQL 的本机目录（会自动创建新子文件夹）", str(self._work_dir)
         )
@@ -2120,7 +2212,11 @@ class MainWindow(QMainWindow):
             except (CatalogError, ConfigError, ValueError, OSError) as exc:
                 QMessageBox.warning(self, "无法从任务整理目录", str(exc))
                 return
-            self.activity.setText("已生成待分类业务图幅清单；请人工选择专题、比例尺与现有父节点。")
+            self.activity.setText("目录初稿已生成，默认全部未分类；请人工选择专题、比例尺与现有父节点。")
+            if from_result:
+                self.result_flow.setText(self.result_flow.text().replace(
+                    "可生成未分类初稿", "已生成未分类初稿（待分类）"
+                ))
             QMessageBox.information(
                 self, "图幅目录初稿已生成",
                 f"已整理 {draft['layer_count']} 个图层。\n\n"

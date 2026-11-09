@@ -86,6 +86,13 @@ ImageMosaic/harvest、PostGIS/GeoPackage/FileGDB、业务库自动写入、ArcGI
 - [ ] macOS 原生安装包、Linux wheel 离线部署包、服务器侧跨连接断点续传。
 
 
+## P0 一线实施体验（Ponytail：复用现有功能）
+
+- [x] 结果页中文状态、下一步动作与四阶段进度链路；跳过/未知写入不可误报为全部成功。
+- [x] 复用任务内 WMS PNG 打开方式（不发起新请求），复用未分类业务目录初稿生成器。
+- [x] 不自动授予业务数据库登记、人工验收或安全重试权限；定向 UI/草稿测试。
+- [ ] P1：主发布界面进一步收敛高级参数与环境设置；P2：GDB/MXD/LYR 导入助手和任务历史分类。
+
 ## 206 业务数据库只读核验（2026-11-09）
 
 - [x] PostgreSQL 16 通过独立 SSH loopback 隧道或 Linux 本机连接；只读事务 BEGIN READ ONLY，statement_timeout，完成 ROLLBACK。

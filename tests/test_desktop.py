@@ -369,7 +369,7 @@ def test_preview_only_displays_existing_task_artifacts(window, tmp_path):
     assert image.save(str(outside))
     window.review_plan(plan)
     window.show_result(
-        {"status": "SUCCEEDED", "resources": [{"resource_id": "r0001", "preview_path": str(outside)}]}
+        {"status": "SUCCEEDED", "resources": [{"resource_id": "r0001", "status": "SUCCEEDED", "preview_path": str(outside)}]}
     )
     assert window._preview_paths == [(folder / "wms.png").resolve()]
     assert window._preview_pixmap is not None
@@ -1136,3 +1136,137 @@ def test_business_tree_button_can_make_unclassified_draft_from_existing_plan(
     assert draft["layers"][0]["wms"]["status"] == "PENDING"
     assert draft["groups"][0]["code"] == "draft_unclassified"
     assert not list(draft_folders[0].glob("*.sql"))
+
+
+
+def test_result_actions_open_local_wms_and_create_unclassified_catalog_without_sql(
+    window, tmp_path, monkeypatch,
+):
+    from test_catalog_draft import fixture_plan
+
+    from geopublisher.plans import load_plan
+
+    source = fixture_plan(tmp_path)
+    plan = load_plan(source)
+    original = source.read_bytes()
+    report = json.loads((source.parent / "report.json").read_text("utf-8"))
+    window.review_plan(plan)
+    window.show_result(report)
+
+    assert window.result_title.text() == "等待看图确认"
+    assert window.view_wms_button.isEnabled()
+    assert window.result_catalog_button.isEnabled()
+    assert "业务数据库：尚未登记" in window.result_flow.text()
+
+    viewed = []
+    monkeypatch.setattr(desktop.QDesktopServices, "openUrl", lambda url: viewed.append(url) or True)
+    window.view_wms_button.click()
+    assert len(viewed) == 1
+    assert viewed[0].isLocalFile()
+    assert Path(viewed[0].toLocalFile()).is_relative_to(source.parent)
+
+    destination = tmp_path / "manual-catalog-drafts"
+    destination.mkdir()
+    monkeypatch.setattr(desktop.QFileDialog, "getExistingDirectory", lambda *_a: str(destination))
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _p, title, msg: messages.append((title, msg)))
+    window.result_catalog_button.click()
+
+    drafts = list(destination.glob("catalog-draft-*/business_tree_draft.json"))
+    assert len(drafts) == 1
+    draft = json.loads(drafts[0].read_text("utf-8"))
+    assert draft["schema_verified"] is False
+    assert draft["groups"][0]["code"] == "draft_unclassified"
+    assert all(layer["parent"] == "draft_unclassified" for layer in draft["layers"])
+    assert all(layer["wms"]["visual_reviewed"] is False for layer in draft["layers"])
+    assert all(layer["wms"]["status"] == "PENDING" for layer in draft["layers"])
+    assert "已生成未分类初稿" in window.result_flow.text()
+    assert "未分类" in messages[0][1]
+    assert source.read_bytes() == original
+    assert not list(destination.rglob("*.sql"))
+    assert not (window._work_dir / "geopublisher.sqlite").exists()
+
+
+@pytest.mark.parametrize("status", ["SKIPPED", "FAILED", "MANUAL_ACTION_REQUIRED", "CANCELLED"])
+def test_unsafe_result_never_offers_success_catalog_action(window, tmp_path, status):
+    from test_catalog_draft import fixture_plan
+
+    from geopublisher.plans import load_plan
+
+    source = fixture_plan(tmp_path)
+    window.review_plan(load_plan(source))
+    result = json.loads((source.parent / "report.json").read_text("utf-8"))
+    result["status"] = status
+    for row in result["resources"]:
+        row["status"] = status
+    window.show_result(result)
+    assert not window.result_catalog_button.isEnabled()
+    assert not window.view_wms_button.isEnabled()
+    assert "尚未登记" in window.result_flow.text()
+
+
+def test_mixed_skip_does_not_claim_every_layer_was_published(window, tmp_path):
+    from test_catalog_draft import fixture_plan
+
+    from geopublisher.plans import load_plan
+
+    source = fixture_plan(tmp_path)
+    window.review_plan(load_plan(source))
+    result = json.loads((source.parent / "report.json").read_text("utf-8"))
+    result["status"] = "SUCCEEDED"  # Legacy engine can report this for publish + SKIPPED.
+    result["resources"][1]["status"] = "SKIPPED"
+    stale = source.parent / 'r0002' / 'wms.png'
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(QColor('gray'))
+    assert image.save(str(stale))
+    window.show_result(result)
+    assert stale.resolve() not in window._preview_paths
+    assert window.result_title.text() == "部分完成"
+    assert "1 个同名未发布" in window.result_summary.text()
+    assert not window.result_catalog_button.isEnabled()
+    window.review_plan(window._plan)
+    assert not window.view_wms_button.isEnabled()
+    assert not window.result_catalog_button.isEnabled()
+
+
+def test_unknown_report_id_cannot_enable_catalog_action(window, tmp_path):
+    from test_catalog_draft import fixture_plan
+
+    from geopublisher.plans import load_plan
+
+    source = fixture_plan(tmp_path)
+    window.review_plan(load_plan(source))
+    result = json.loads((source.parent / "report.json").read_text("utf-8"))
+    result["task_id"] = "another-unrelated-task"
+    window.show_result(result)
+    assert not window.result_catalog_button.isEnabled()
+
+
+
+def test_result_p0_does_not_offer_catalog_without_matching_saved_report(window, tmp_path):
+    from test_catalog_draft import fixture_plan
+
+    from geopublisher.plans import load_plan
+
+    source = fixture_plan(tmp_path)
+    window.review_plan(load_plan(source))
+    result = json.loads((source.parent / "report.json").read_text("utf-8"))
+    (source.parent / "report.json").unlink()
+    window.show_result(result)
+    assert not window.result_catalog_button.isEnabled()
+
+
+def test_result_p0_prefers_unknown_write_safety_over_inconsistent_success(window, tmp_path):
+    from test_catalog_draft import fixture_plan
+
+    from geopublisher.plans import load_plan
+
+    source = fixture_plan(tmp_path)
+    window.review_plan(load_plan(source))
+    result = json.loads((source.parent / "report.json").read_text("utf-8"))
+    result["status"] = "SUCCEEDED"
+    result["resources"][1]["status"] = "MANUAL_ACTION_REQUIRED"
+    window.show_result(result)
+    assert window.result_title.text() == "需要人工核对"
+    assert not window.result_catalog_button.isEnabled()
+    assert not window.view_wms_button.isEnabled()

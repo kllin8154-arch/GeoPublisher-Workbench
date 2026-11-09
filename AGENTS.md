@@ -1,6 +1,7 @@
 # Development rules
 
 - Read `docs/IMPLEMENTATION_CONTRACT.md` before changing interfaces.
+- Ponytail: first reuse existing code and platform features; write the smallest complete diff and focused tests. Never shrink security, audit, error handling or source-data protection.
 - Code, documentation, and synthetic fixture generators only. Never commit real spatial data, credentials, local environment profiles, or user attachments.
 - Do not contact a production GeoServer or database during development.
 - Keep network access limited to the explicitly configured endpoint; no telemetry, implicit redirects, remote styles, or shell command strings.

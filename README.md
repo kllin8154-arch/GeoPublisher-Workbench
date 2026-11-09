@@ -188,3 +188,12 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
 每一步独立确认，同名对象拒绝覆盖，未知结果不盲重试；SSH、GeoServer 密码均不保存。**业务目录 SQL 仍从 catalog-draft/catalog-tree 生成并经实际数据库审核后人工执行**，当前 SSH 功能不会自动写 206 PostgreSQL。真实现场必须先核实权限、GeoServer 插件、JDK 服务进程、206 的字段及父节点。
 
 详细实施和 CLI 示例：[局域网 Linux 服务器发布指南](docs/SERVER-LAN-DEPLOY.md)。
+
+
+### 206 PostgreSQL 业务目录核验（只读）
+
+新增 **“Linux 服务器部署 → 7. 业务数据库表与父节点只读核验”**。Windows/macOS/Linux 可通过 206 专属 SSH 隧道访问 PostgreSQL localhost；Linux 本机也可使用同一接口。它对审核中的 business-tree JSON 检查服务/节点表、字段及数据类型、id 序列、真实父节点、拟新增节点和 GeoServer 服务冲突，仅输出本机证据 JSON，**不会执行 SQL、上传数据或修改数据库**，且永不自动标记 schema_verified=true。CLI：
+
+    geopub server-catalog-doctor --profile <206 SSH配置> --catalog-json <业务目录JSON> --database <数据库名> --database-user <只读用户> --output <本机全新证据目录>
+
+详细说明：[206 PostgreSQL 只读审查流程](docs/DATABASE-CATALOG-READONLY.md)。

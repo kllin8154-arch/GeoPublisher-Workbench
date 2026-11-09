@@ -143,3 +143,18 @@ CLI 的 --profile 指向本机 JSON；tar 文件路径也指向 Linux 上的本�
 - 本机独立 GeoServer 2.24.4 + JDK17 合成 GeoTIFF 与 8 分幅 ImageMosaic 的 REST/WMS 真实验证通过。
 - 仍需在实际目标 Linux 上只读预检 SSH、Java 运行进程/权限、ImageMosaic 配套 JAR、GeoServer REST 版本、父节点与数据库结构。正式 208/206 均未在此开发过程中修改。
 - 生产 SQL 自动执行、跨平台原生安装器、ImagePyramid 和断点续传属于后续独立安全验收阶段；不得宣称已经实现。
+
+
+## PostgreSQL 16 只读现场核验与自动化回归
+
+GeoServer 发布后，业务目录登记须先单独运行“7. 业务数据库表与父节点只读核验”。该阶段使用 206 独立 SSH 会话，PostgreSQL 端口经 SSH 转发到远端 localhost。数据库会话使用 BEGIN READ ONLY、限时只读查询、ROLLBACK，仅比较业务目录 JSON 指明的业务表、必要字段、父节点和服务绑定，不自动修改 schema_verified。
+
+CLI 命令：
+
+    geopub server-catalog-doctor --profile <206-ssh.json> --catalog-json <business_tree_draft.json> --database <DB> --database-user <SELECT-role> --output <new-local-folder>
+
+密码通过交互式提示输入，不写入 JSON、审计报告或命令行参数。推荐专用 SELECT 最小权限账号。
+
+为避免模拟数据测试掩盖兼容问题，CI 新增独立的 postgres16-readonly-integration Ubuntu 作业，在一次性 postgres:16-alpine 服务上创建 demo_catalog/demo_nodes/demo_services 合成数据，验证正常核验、父节点错误阻断、真实事务只读状态，以及 SELECT 账号无法 INSERT。专用测试用例必须显式设置 GEOPUB_SYNTHETIC_PG16_TEST=1，否则跳过；CI 数据与现网 206 完全无关。
+
+任何无阻断的只读报告都只是证据，不构成可执行生产 SQL 的授权。真实 206 的字段、现有父节点和账号仍需现场核验，备份与数据库登记操作须单独批准。

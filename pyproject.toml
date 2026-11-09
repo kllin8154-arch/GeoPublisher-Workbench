@@ -12,6 +12,7 @@ dependencies = [
     "Pillow>=11,<13",
     "defusedxml>=0.7,<0.8",
     "paramiko>=3.5,<5",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [project.optional-dependencies]

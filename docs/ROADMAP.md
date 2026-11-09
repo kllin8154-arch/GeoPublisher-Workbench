@@ -84,3 +84,14 @@ ImageMosaic/harvest、PostGIS/GeoPackage/FileGDB、业务库自动写入、ArcGI
 - [ ] 目标 208 SSH 主机密钥/运行态/JDK 进程/插件、实际目录权限、服务器 SHA256 和真实 WMS 的现场验证与授权发布。
 - [ ] 目标 206 数据库真实字段/父节点只读核验、正式业务分类 SQL 执行与前端验收（当前仍阻断自动写入）。
 - [ ] macOS 原生安装包、Linux wheel 离线部署包、服务器侧跨连接断点续传。
+
+
+## 206 业务数据库只读核验（2026-11-09）
+
+- [x] PostgreSQL 16 通过独立 SSH loopback 隧道或 Linux 本机连接；只读事务 BEGIN READ ONLY，statement_timeout，完成 ROLLBACK。
+- [x] 只读校验目标 schema/table、字段及数据类型、非空必填字段、id 自增序列、已有父节点 code/title/sys/parent 及图层/服务冲突。
+- [x] UI 第 7 阶段按操作类型动态显示 SSH/GeoServer/PostgreSQL 字段；凭据仅在本次会话内存。
+- [x] CLI server-catalog-doctor；只写本机新报告目录，记录配置 SHA256，永不自动批准 schema_verified。
+- [x] 本机隔离 PostgreSQL 16.14 合成表只读/服务及节点冲突实测通过；只读角色 INSERT 被拒绝，测试容器已删除。
+- [ ] 206 实际表结构/序列、父节点、SELECT 权限现场授权核验和结果人工签收。
+- [ ] 生产数据库正式 SQL 手动事务执行、先备份、后查询复核；自动事务执行与回滚尚未上线。

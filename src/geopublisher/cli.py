@@ -105,12 +105,46 @@ def parser() -> argparse.ArgumentParser:
     server_plan.add_argument("--plan", type=Path, required=True)
     server_plan.add_argument("--geoserver-user", required=True)
     server_plan.add_argument("--yes", action="store_true", help="已确认计划、目标服务器及新图层")
+    db_check = sub.add_parser(
+        "server-catalog-doctor",
+        help="SSH 隧道连接业务 PostgreSQL：仅核对真实字段、父节点和服务冲突，输出本机证据，不写库",
+    )
+    db_check.add_argument("--profile", type=Path, required=True, help="206 Linux SSH 连接配置，无密码")
+    db_check.add_argument("--catalog-json", type=Path, required=True, help="当前业务目录 JSON 映射")
+    db_check.add_argument("--database", required=True, help="目标 PostgreSQL 数据库名")
+    db_check.add_argument("--database-user", required=True, help="具备 SELECT 权限的数据库账号")
+    db_check.add_argument("--output", type=Path, required=True, help="本地全新只读证据目录")
     return root
 
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "server-catalog-doctor":
+            from .catalog_live import probe_catalog, review_mapping
+            from .server_deploy import LinuxTarget, open_target
+
+            target = LinuxTarget.load(args.profile)
+            review_mapping(args.catalog_json)
+            if not sys.stdin.isatty():
+                raise ValueError("数据库只读核验的凭据只能在交互式终端输入。")
+            ssh_password = (
+                getpass.getpass("SSH 登录密码（不保存）：")
+                if target.mode == "ssh" and target.auth == "password" else None
+            )
+            key_passphrase = (
+                getpass.getpass("SSH 私钥口令（留空表示无）：") or None
+                if target.mode == "ssh" and target.auth == "key" else None
+            )
+            db_password = getpass.getpass("PostgreSQL 只读账号密码（不保存）：")
+            with open_target(target, password=ssh_password, passphrase=key_passphrase) as session:
+                result = probe_catalog(
+                    target, session, args.catalog_json,
+                    database=args.database, username=args.database_user,
+                    password=db_password, output=args.output,
+                )
+            _print(result)
+            return 0 if result["status"] == "READ_ONLY_EVIDENCE_READY_NOT_APPROVED" else 3
         if args.command == "server-publish-plan":
             from .server_deploy import LinuxTarget, open_target
             from .server_plan import publish_plan_via_tunnel, validate_server_binding

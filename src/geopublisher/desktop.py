@@ -1803,6 +1803,28 @@ class MainWindow(QMainWindow):
         gs_password.setEchoMode(QLineEdit.EchoMode.Password)
         gs_password.setPlaceholderText("只用于本次连接，不写入配置")
         form.addRow("GeoServer REST 密码", gs_password)
+        postgres_port = QSpinBox()
+        postgres_port.setRange(1, 65535)
+        postgres_port.setValue(5432)
+        form.addRow("PostgreSQL 本机端口", postgres_port)
+        catalog_file = QLineEdit()
+        catalog_file.setPlaceholderText("选择此前生成、尚待审查的业务目录 JSON")
+        catalog_row = dialog_path_row(
+            catalog_file, lambda: catalog_file.setText(QFileDialog.getOpenFileName(
+                dialog, "选择业务目录 JSON", str(self._work_dir), "JSON (*.json)"
+            )[0] or catalog_file.text())
+        )
+        form.addRow("待核查业务目录 JSON", catalog_row)
+        db_name = QLineEdit()
+        db_name.setPlaceholderText("实际 PostgreSQL 数据库名")
+        form.addRow("业务数据库名", db_name)
+        db_user = QLineEdit()
+        db_user.setPlaceholderText("建议使用只能 SELECT 的数据库账号")
+        form.addRow("数据库只读用户名", db_user)
+        db_password = QLineEdit()
+        db_password.setEchoMode(QLineEdit.EchoMode.Password)
+        db_password.setPlaceholderText("仅在本次只读核验内存中使用")
+        form.addRow("数据库密码", db_password)
         operation = QComboBox()
         for title, step in (
             ("1. SSH/Linux 只读预检", "doctor"),
@@ -1811,9 +1833,54 @@ class MainWindow(QMainWindow):
             ("4. GeoServer 只读预检", "geoserver_doctor"),
             ("5. 创建新 GeoTIFF / ImageMosaic", "publish_raster"),
             ("6. 发布已有 SHP / 单 GeoTIFF 任务", "publish_plan"),
+            ("7. 业务数据库表与父节点只读核验", "db_doctor"),
         ):
             operation.addItem(title, step)
         form.addRow("执行阶段", operation)
+        def refresh_fields(*_unused) -> None:
+            selected = operation.currentData()
+            raster = selected in {"geoserver_doctor", "publish_raster"}
+            geo = raster or selected == "publish_plan"
+            db_only = selected == "db_doctor"
+            ssh_mode = mode.currentData() == "ssh"
+            visible = {
+                "服务器内网 IP": ssh_mode,
+                "SSH 端口": ssh_mode,
+                "SSH 用户名": ssh_mode,
+                "认证方式": ssh_mode,
+                "SSH 密码 / 私钥口令": ssh_mode and auth.currentData() in {"password", "key"},
+                "已核验的 known_hosts": ssh_mode,
+                "SSH 私钥文件": ssh_mode and auth.currentData() == "key",
+                "Linux 发布包目录": not db_only,
+                "GeoServer 本机端口": geo,
+                "本地发布归档": selected in {"stage", "extract"} or raster,
+                "GeoServer 发布清单": raster,
+                "已有发布任务": selected == "publish_plan",
+                "GeoServer REST 用户": geo,
+                "GeoServer REST 密码": geo,
+                "PostgreSQL 本机端口": db_only,
+                "待核查业务目录 JSON": db_only,
+                "业务数据库名": db_only,
+                "数据库只读用户名": db_only,
+                "数据库密码": db_only,
+            }
+            for index in range(form.rowCount()):
+                item = form.itemAt(index, QFormLayout.ItemRole.LabelRole)
+                if item is not None and item.widget() is not None:
+                    label_text = item.widget().text()
+                    if label_text in visible:
+                        form.setRowVisible(index, visible[label_text])
+            note.setText(
+                "206 业务数据库只读模式：通过 SSH 隧道读取指定表结构、父节点和服务冲突，"
+                "不会 INSERT/UPDATE/DELETE，也不会自动批准 schema_verified。"
+                if db_only else
+                "每阶段独立确认，SSH 主机指纹必须先核验；"
+                "GeoServer 写入前需要二次确认，数据库 SQL 始终单独审核。"
+            )
+        operation.currentIndexChanged.connect(refresh_fields)
+        mode.currentIndexChanged.connect(refresh_fields)
+        auth.currentIndexChanged.connect(refresh_fields)
+        refresh_fields()
         scroll_contents = QWidget(dialog)
         scroll_contents.setLayout(form)
         scroll = QScrollArea(dialog)
@@ -1841,6 +1908,7 @@ class MainWindow(QMainWindow):
                 key_file=key.text().strip(),
                 root=root.text().strip(),
                 geoserver_port=geoserver_port.value(),
+                postgres_port=postgres_port.value(),
             )
         except Exception as exc:
             QMessageBox.warning(self, "服务器配置未通过检查", str(exc))
@@ -1855,6 +1923,10 @@ class MainWindow(QMainWindow):
             "manifest": manifest.text().strip(),
             "geoserver_user": gs_user.text().strip(),
             "geoserver_password": gs_password.text(),
+            "catalog_file": catalog_file.text().strip(),
+            "database": db_name.text().strip(),
+            "database_user": db_user.text().strip(),
+            "database_password": db_password.text(),
         }
 
     def _server_deploy(self) -> None:
@@ -1870,6 +1942,12 @@ class MainWindow(QMainWindow):
         needs_tar = action in {"stage", "extract", "geoserver_doctor", "publish_raster"}
         if needs_tar and not settings["archive"]:
             QMessageBox.warning(self, "缺少归档", "请先选择本机受控的 .tar 发布包。")
+            return
+        if action == "db_doctor" and not all(settings.get(key) for key in (
+            "catalog_file", "database", "database_user", "database_password"
+        )):
+            QMessageBox.warning(self, "缺少数据库只读核验信息",
+                                "请填写业务目录 JSON、数据库名、只读账号与本次密码。")
             return
         if action in {"geoserver_doctor", "publish_raster", "publish_plan"}:
             if not settings["geoserver_user"] or not settings["geoserver_password"]:
@@ -1926,6 +2004,15 @@ class MainWindow(QMainWindow):
             ) as session:
                 if action == "doctor":
                     return preflight(target, session)
+                if action == "db_doctor":
+                    from .catalog_live import probe_catalog
+
+                    destination = self._work_dir / ("business-db-review-" + uuid.uuid4().hex[:12])
+                    return probe_catalog(
+                        target, session, settings["catalog_file"],
+                        database=settings["database"], username=settings["database_user"],
+                        password=settings["database_password"], output=destination,
+                    )
                 if action == "publish_plan":
                     from .server_plan import publish_plan_via_tunnel
 
@@ -1980,16 +2067,29 @@ class MainWindow(QMainWindow):
             "SUCCEEDED": "发布任务返回成功；请检查图层与前端效果",
             "REVIEW_REQUIRED": "发布任务完成，但 WMS 地图效果需人工核验",
             "MANUAL_ACTION_REQUIRED": "服务器写入结果尚不确定；必须核对再继续",
+            "READ_ONLY_EVIDENCE_READY_NOT_APPROVED": "业务数据库只读核验无阻断；仍需人工审批并生成 SQL",
+            "BLOCKED_PENDING_HUMAN_REVIEW": "数据库发现字段、目录或服务冲突，已生成本机审查报告",
         }.get(status, status)
         self.activity.setText(label + "；业务数据库 SQL 仍需单独审核执行。")
-        evidence_path = result.get("audit_directory") or result.get("report_path")
+        evidence_path = result.get("audit_directory") or result.get("report_path") or result.get("review")
         extra = f"\n本机审计记录：{evidence_path}" if evidence_path else ""
-        QMessageBox.information(
+        reasons = result.get("blocking_reasons", [])
+        if reasons:
+            extra += "\n\n需要处理的问题：\n" + "\n".join(
+                "- " + str(reason) for reason in reasons[:6]
+            )
+            if len(reasons) > 6:
+                extra += f"\n...其余 {len(reasons) - 6} 项请查看本机报告"
+        notify = (
+            QMessageBox.warning if status == "BLOCKED_PENDING_HUMAN_REVIEW"
+            else QMessageBox.information
+        )
+        notify(
             self, "Linux 服务器阶段完成",
             label + "\n\n目标：" + str(result.get("target", {}).get("host", "本机 Linux"))
             + "\n目录：" + str(result.get("remote_directory", "尚未解包"))
             + extra
-            + "\n\n请以阶段状态和实际 GeoServer WMS 验收为准；数据库目录仍未登记。",
+            + "\n\n本工具不会自动执行 206 SQL；请以只读核验、真实 WMS 和人工审核结论为准。",
         )
 
     def _export_business_tree(self) -> None:

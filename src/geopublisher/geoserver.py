@@ -478,6 +478,41 @@ class GeoServerClient:
         )
         return self._evidence(response, "PUT", "upload_dataset")
 
+    def register_external_raster(
+        self, workspace: str, store: str, layer: str,
+        kind: str, server_path: str,
+    ) -> dict:
+        """Create only a *new* server-local GeoTIFF/ImageMosaic coverage store.
+
+        Input is a path *already resident* on the GeoServer host. The caller
+        must verify that path and archive integrity via SSH/local preflight.
+        No dataset bytes pass through REST; the operation may be UNKNOWN on
+        timeouts and must never be retried without reconciliation.
+        """
+        workspace, store, layer = _name(workspace), _name(store), _name(layer)
+        if kind not in {"geotiff", "imagemosaic"}:
+            raise GeoServerError("UNSUPPORTED_EXTERNAL_RASTER", "External raster only supports geotiff/imagemosaic.")
+        if (
+            not isinstance(server_path, str) or not server_path.startswith("/")
+            or len(server_path) > 4096 or "\\" in server_path
+            or any(part in {"", ".", ".."} for part in server_path.split("/")[1:])
+            or any(ord(char) < 32 for char in server_path)
+        ):
+            raise GeoServerError("INVALID_EXTERNAL_PATH", "Server-local raster path is not a safe absolute Linux path.")
+        if self.get_store(workspace, store, "geotiff") is not None:
+            raise GeoServerError("CONFLICT", "Existing raster store must never be replaced.", status_code=409)
+        if self.get_layer(workspace, layer) is not None:
+            raise GeoServerError("CONFLICT", "Existing raster layer must never be replaced.", status_code=409)
+        response = self._request(
+            "PUT",
+            f"/rest/workspaces/{workspace}/coveragestores/{store}/external.{kind}",
+            operation="register server-local raster",
+            params={"configure": "all", "coverageName": layer},
+            content=server_path.encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=UTF-8"},
+        )
+        return self._evidence(response, "PUT", "register_external_raster")
+
     def publish_resource(
         self,
         workspace: str,

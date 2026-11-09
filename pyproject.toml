@@ -7,7 +7,12 @@ name = "geopublisher-workbench"
 version = "0.1.0"
 description = "Offline-first, auditable GeoServer publishing workbench"
 requires-python = ">=3.11"
-dependencies = ["httpx>=0.28,<0.29", "Pillow>=11,<13", "defusedxml>=0.7,<0.8"]
+dependencies = [
+    "httpx>=0.28,<0.29",
+    "Pillow>=11,<13",
+    "defusedxml>=0.7,<0.8",
+    "paramiko>=3.5,<5",
+]
 
 [project.optional-dependencies]
 desktop = ["PySide6-Essentials>=6.8,<7"]

@@ -174,3 +174,17 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
     uv run --frozen --no-sync geopub catalog-draft D:\LocalGIS\task-xxx\plan.json --output D:\LocalGIS\catalog-draft-new
 
 新初稿**不会猜测比例尺或父节点**，所有图层先放入 draft_unclassified，强制未审核，不能直接写入数据库。对已完成 WMS 的发布结果，仅预填任务内有效 PNG 的位置，仍需业务人员检查视觉、样式、真实数据来源与目录归属。完整流程见 [业务分类与比例尺工作流](docs/BUSINESS-CATALOG-WORKFLOW.md)。
+
+
+## Linux 服务器实际交付（SSH/SFTP / Linux 本机，2026-11）
+
+新增桌面 **“Linux 服务器部署”** 入口与 CLI。Windows/macOS/Linux 客户端支持通过已核验 SSH 主机公钥的 SFTP 传输受控 tar、服务器 SHA256 校验、全新目录解包；同一套 CLI 也支持 Linux 服务器本地复制与 GeoServer localhost REST。
+
+分两条路径：
+
+1. **图幅矢量与单影像**：MXD/GDB 先在本地转换 SHP/LYR/SLD，再由原有 plan.json、SQLite 审计引擎经 SSH localhost 隧道发布到目标 GeoServer（禁止修改不可变计划绑定的服务地址）。
+2. **服务器端栅格/全球影像**：已核验的 GeoTIFF/ImageMosaic 发布包经 SFTP 落地后，使用 GeoServer REST external.geotiff / external.imagemosaic 注册，保存 WMS PNG、granules 计数和每个 REST 写入意图。
+
+每一步独立确认，同名对象拒绝覆盖，未知结果不盲重试；SSH、GeoServer 密码均不保存。**业务目录 SQL 仍从 catalog-draft/catalog-tree 生成并经实际数据库审核后人工执行**，当前 SSH 功能不会自动写 206 PostgreSQL。真实现场必须先核实权限、GeoServer 插件、JDK 服务进程、206 的字段及父节点。
+
+详细实施和 CLI 示例：[局域网 Linux 服务器发布指南](docs/SERVER-LAN-DEPLOY.md)。

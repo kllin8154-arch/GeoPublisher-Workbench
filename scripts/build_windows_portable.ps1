@@ -11,6 +11,8 @@ $venvPython = Join-Path $repo '.venv\Scripts\python.exe'
 $pixi = Join-Path $repo '.pixi\envs\default'
 $icon = Join-Path $repo 'assets\geopublisher.ico'
 $arcmapResources = Join-Path $repo 'src\geopublisher\resources'
+$offlineShortcut = Join-Path $repo 'scripts\Install-Offline-Shortcut.cmd'
+if (-not (Test-Path -LiteralPath $offlineShortcut -PathType Leaf)) { throw 'Missing offline shortcut helper' }
 if (-not (Test-Path (Join-Path $arcmapResources 'arcmap_mxd_to_shp.py')) -or -not (Test-Path (Join-Path $arcmapResources 'arcmap_create_synthetic_mxd.py'))) { throw 'Missing optional offline ArcMap helpers.' }
 $entry = Join-Path $repo 'scripts\desktop_entry.py'
 $final = Join-Path $OutputRoot 'Current'
@@ -61,6 +63,7 @@ $bin = Join-Path $runtime 'Library\bin'
 $share = Join-Path $runtime 'Library\share'
 $exe = Join-Path $application 'GeoPublisher-Workbench.exe'
 if (-not (Test-Path (Join-Path $share 'proj\proj.db')) -or -not (Test-Path (Join-Path $share 'gdal'))) { throw 'Incomplete GDAL/PROJ data directory' }
+Copy-Item -LiteralPath $offlineShortcut -Destination (Join-Path $application 'Install-Offline-Shortcut.cmd') -ErrorAction Stop
 $oldPath = $env:PATH
 $oldGdal = $env:GDAL_DATA
 $oldProj = $env:PROJ_DATA
@@ -100,6 +103,9 @@ Third-party package metadata is included. Full license files, NOTICE review,
 signing and clean Windows offline acceptance remain required before distribution.
 No production GeoServer or business databases have been used to build or test.
 To start: double-click GeoPublisher-Workbench.exe.
+For an offline Windows desktop, double-click Install-Offline-Shortcut.cmd
+once after copying the COMPLETE Current folder to the target local disk.
+No network, admin access, Python, pip or PowerShell script policy changes needed.
 GIS tools are preselected only when a complete bundle is present.
 Do not move or delete runtime/ or _internal/ separately from the executable.
 '@ | Set-Content -LiteralPath (Join-Path $application 'PREVIEW-READ-ME.txt') -Encoding UTF8
@@ -118,6 +124,7 @@ $manifest = [ordered]@{
         exe_sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
         gdal_sha256 = (Get-FileHash -LiteralPath (Join-Path $bin 'gdalinfo.exe') -Algorithm SHA256).Hash
         projdb_sha256 = (Get-FileHash -LiteralPath (Join-Path $share 'proj\proj.db') -Algorithm SHA256).Hash
+        offline_shortcut_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'Install-Offline-Shortcut.cmd') -Algorithm SHA256).Hash
     }
     third_party_count = $packages.Count
 }

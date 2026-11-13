@@ -99,3 +99,25 @@ CLI：
 所有图幅初始均属于 draft_unclassified，且 classification_reviewed=false、WMS=PENDING。即使操作员直接改为 WMS=PASSED，**临时未分类目录仍会永久阻断数据库 INSERT**；必须把图幅移动至真实专题/比例尺父目录，删除临时组，并单独完成 WMS、业务结构与数据来源核验，才可生成审核 SQL。
 
 源数据可能先经 MXD/GDB→SHP 导出。plan.json 仅能证明发布的 SHP，并不能恢复原 GDB/MXD 来源的全部业务信息；请依照转换报告与原图层清单进行复核。生成器不会猜测比例尺、坐标系转换或业务分类，也不会接触 GeoServer/数据库、网络或远程文件共享。
+
+
+## 整份 GDB/MXD 批量发布并写入数据库目录节点（2026-11-13）
+
+**父子节点的最终归属是业务 PostgreSQL 数据库，不是本地树组件。** 本地清单只是审核材料；只有在执行经核准的 02_register_reviewed.sql 事务后，才会向所配置的 tables.node 表写入节点。
+
+1. 从工作台“GDB / MXD / LYR 转换”转换整份数据，或点击“导入整批转换图幅”选择含 conversion-report.json / mxd-export-manifest.json 的 **本机转换结果目录**。只加入清单中已成功导出的 SHP，不把失败、中止、跳过或孤立的 SHP 混入。
+2. 工作台执行原有的批量 SHP 预检、字段与 CRS 核验、SLD 配对；发布操作仍必须用户确认。每份来源文件及各子图层在发布计划里保留 conversion_origin（批次、原图层名、转换清单摘要），重启恢复后也可核验源头。计划执行前再次检查转换清单和源组件是否更改，变化则阻断。
+3. GeoServer 每个 SHP 是独立的发布资源，单个失败可在任务日志中定位；不可用图层不应登记成功。对于 MXD 内的 ArcGIS 图层，source_frame 保留地图框名以便人工核实真实图幅归属。
+4. 发布后点击“生成数据库节点草稿”：每一份 GDB 或 MXD 自动生成一个文件父节点（显示原文件名），本批各 SHP 对应一个图层子节点，其 parent 指向文件父节点的 code。未归类的普通 SHP 仍留在 draft_unclassified；此根占位组必须删除，不得在现场创建。
+5. 审核人将文件父节点 parent 替换为真实业务专题/比例尺编码，并把该既有父节点加入 existing_parents；核对实际节点表、服务表、关联字段与字段类型、数据库唯一性、转换字段、实际 WMS 图像，以及子图层的业务名称。所有 classification_reviewed、conversion_reviewed、wms.visual_reviewed 和 schema_verified 默认 **false**。
+6. 选业务目录 JSON 生成 SQL，只有校验条件全部满足才会生成 02_register_reviewed.sql：SQL 先插入服务记录，再插入每个来源文件父节点及全部图层子节点。glcode 等现场父关联字段从经过核实的 columns.node.parent 映射读取，不能凭示例配置猜测；SQL 一次事务、执行前查重复、默认不可见，任何错误回滚整次数据库登记。**不会自动写生产数据库，也不会未经授权连接或外传源地质数据。**
+
+示意数据库业务目录（不是新增本地数据库或桌面树）：
+
+    已有专题/比例尺节点（数据库已存在）
+      └─ 示例地质图.gdb（新建父节点）
+         ├─ 图幅001（新建图层节点，关联 GeoServer 服务）
+         ├─ 图幅002（新建图层节点，关联 GeoServer 服务）
+         └─ 图幅003（新建图层节点，关联 GeoServer 服务）
+
+**重要限制：** MXD 的地图框/图层和 GDB 的要素类不必然就是一个真实地质图幅。当前按导出清单的实际 SHP 逐项生成子节点，并保留原始图层/地图框用于核实；如果一个图幅由地层、断层、标注等多个服务组成，必须先核对业务图幅编号及 GeoServer Layer Group 方案，不得把单个要素类误报为完整图幅。已有文件父节点应通过 existing_parents 人工核实后复用，不能重复 INSERT。

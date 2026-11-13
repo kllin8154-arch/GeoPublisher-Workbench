@@ -24,7 +24,7 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 服务验收 | WMS PNG 解码、尺寸、透明度和内容检查；矢量可选 WFS 抽样；无法判断的图片标记待人工核验 |
 | 任务恢复 | SQLite 持久化写意图、结果、所有权快照和锁；未知写结果不盲目重试 |
 | 配置清理 | 精确清理本任务拥有且未被外部修改的对象；保留服务器实际数据文件 |
-| 目录接入 | 导出绑定清单；人工核验字段映射后生成 PostgreSQL SQL；不连接业务数据库 |
+| 数据库目录节点 | 按整份 GDB/MXD 转换清单生成来源文件父节点与每个 SHP 子节点，校验实际图层、WMS、数据库字段映射后导出可审查的 PostgreSQL 登记 SQL；不擅自写生产库 |
 | 桌面界面 | 数据选择、环境设置、预检、一次任务级确认、后台执行、检查点取消、真实地图、历史及恢复；ArcMap/QGIS 本机直接转换向导 |
 
 已在隔离 GeoServer 2.24.4 上以**纯数学合成多边形**完成 GDB→SHP→短字段映射→SLD 的真实只读 WMS 颜色验证；见 [分类样式实测](docs/VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)。此测试采用停机准备的专用 catalog，不代表正式 REST 发布或真实 LYR/MXD 视觉保真。另已在 ArcMap 10.8 / QGIS 4.2.1 上完成真实合成 MXD→SHP/LYR→QML/SLD 离线转换及中文路径检查；详见 [本机验收](docs/VALIDATION-ARCMAP-QGIS-2026-11-02.md)。当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
@@ -142,7 +142,7 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
 | 模块 | 职责 |
 |---|---|
 | `config.py` / `plans.py` | 环境、输入类型、不可变计划、来源与产物摘要 |
-| `imports.py` | 本地结构标记、显式多 TIFF 意图、冻结来源与执行前复核 |
+| `imports.py` / `conversion_batches.py` | 本地结构标记、显式多 TIFF 意图、GDB/MXD 转换清单校验、冻结来源与执行前复核 |
 | `datasets.py` / `styles.py` | 受控 GDAL、数据预检、打包与 SLD |
 | `geoserver.py` / `verification.py` | REST、WMS/WFS、图像验收 |
 | `journal.py` / `engine.py` | 写意图、锁、所有权、恢复与精确清理 |

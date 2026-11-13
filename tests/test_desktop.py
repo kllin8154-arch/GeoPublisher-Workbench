@@ -938,7 +938,12 @@ def test_direct_mxd_gui_runs_worker_and_offers_shp_import(window, app, tmp_path,
     exported.mkdir()
     (exported / "demo.shp").write_bytes(b"synthetic")
     report = exported / "mxd-export-manifest.json"
-    report.write_text('{"items":[]}', encoding="utf-8")
+    report.write_text(json.dumps({
+        "schema_version": 1, "converter": "ArcMap-10x-local",
+        "source_filename": "synthetic.mxd", "uploaded": False,
+        "items": [{"source_layer": "demo", "data_frame": "Map", "status": "EXPORTED",
+                   "shp": "demo.shp"}],
+    }), encoding="utf-8")
     runtime = tmp_path / "ArcGIS10.8" / "python.exe"
     monkeypatch.setattr(offline_conversion, "suggested_runtime", lambda _kind: str(runtime))
     monkeypatch.setattr(offline_conversion, "local_python_environment", lambda *_: (runtime, {}))
@@ -963,7 +968,7 @@ def test_direct_mxd_gui_runs_worker_and_offers_shp_import(window, app, tmp_path,
     wait_until(app, lambda: window._thread is None)
     assert [item[0] for item in calls] == ["mxd"]
     assert window.sources.count() == 1
-    assert window.sources.item(0).text() == str(exported)
+    assert window.sources.item(0).text() == str(exported / "demo.shp")
     assert window.offline_report_button.isEnabled()
     assert not window.offline_cancel_button.isVisible()
 
@@ -1270,3 +1275,31 @@ def test_result_p0_prefers_unknown_write_safety_over_inconsistent_success(window
     assert window.result_title.text() == "需要人工核对"
     assert not window.result_catalog_button.isEnabled()
     assert not window.view_wms_button.isEnabled()
+
+
+def test_partial_mxd_import_only_successful_shps(window, tmp_path, monkeypatch):
+    """A failed ArcMap layer cannot become a database child or publication source."""
+    destination = tmp_path / "export"
+    destination.mkdir()
+    (destination / "sheet_ok.shp").write_bytes(b"synthetic")
+    (destination / "sheet_failed.shp").write_bytes(b"incomplete")
+    manifest = destination / "mxd-export-manifest.json"
+    manifest.write_text(json.dumps({
+        "schema_version": 1, "converter": "ArcMap-10x-local",
+        "source_filename": "synthetic.mxd", "uploaded": False,
+        "items": [
+            {"source_layer": "图幅一", "data_frame": "Map", "shp": "sheet_ok.shp", "status": "EXPORTED"},
+            {"source_layer": "图幅二", "data_frame": "Map", "shp": "sheet_failed.shp", "status": "FAILED"},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    window._show_offline_conversion_result({
+        "kind": "mxd", "status": "INCOMPLETE", "converted": 1, "total": 2,
+        "job": str(tmp_path), "report": str(manifest), "output": str(destination),
+    })
+    assert [window.sources.item(i).text() for i in range(window.sources.count())] == [
+        str(destination / "sheet_ok.shp")
+    ]
+    assert "其余 1 个已排除" in window.activity.text()

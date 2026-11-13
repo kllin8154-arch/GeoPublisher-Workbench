@@ -61,6 +61,7 @@ def build_plan(
     task_id: str | None = None,
 ) -> dict:
     from .arcgis_bridge import resolve_sld_directory
+    from .conversion_batches import conversion_origins
     from .datasets import GdalRuntime, package_dataset
     from .imports import prepare_imports, verify_import_intent
     from .sld_field_remap import load_reviewed_field_map, rewrite_sld_field_references
@@ -92,6 +93,7 @@ def build_plan(
             "OUTPUT_INSIDE_SOURCE", "任务目录不能位于导入目录内；请选择独立的输出位置。"
         )
     paths = [Path(item["path"]) for item in import_intent["datasets"]]
+    origins = conversion_origins(paths)
     if sld and sld_directory:
         raise ConfigError("SLD_MODE_CONFLICT", "单个 SLD 与批量 SLD 目录不能同时使用。")
     if sld and len(paths) != 1:
@@ -136,6 +138,12 @@ def build_plan(
             "blocking_errors": list(info.get("blocking_errors", [])),
             "warnings": list(info.get("warnings", [])),
         }
+        if str(source.resolve()) in origins:
+            resource["conversion_origin"] = origins[str(source.resolve())]
+            resource["warnings"].append({
+                "code": "CONVERSION_REVIEW_REQUIRED",
+                "message": "来自 GDB/MXD 批量转换；字段、样式、图幅归属需人工复核。",
+            })
         if not isinstance(info.get("crs"), str) or not re.fullmatch(r"EPSG:[0-9]{1,8}", info["crs"], re.I):
             resource["blocking_errors"].append(
                 {
@@ -263,6 +271,7 @@ def validate_plan(plan: dict) -> None:
         if not output.is_absolute() or not isinstance(plan["resources"], list) or not plan["resources"]:
             raise ValueError()
         seen_ids, seen_names = set(), set()
+        batch_sources = {}
         for resource in plan["resources"]:
             rid = resource["resource_id"]
             if not re.fullmatch(r"r[0-9]{4,8}", rid) or rid in seen_ids:
@@ -313,6 +322,36 @@ def validate_plan(plan: dict) -> None:
                     raise ValueError()
         if plan["schema_version"] == 2:
             validate_import_intent(plan["import_intent"], plan["resources"])
+            for resource in plan["resources"]:
+                origin = resource.get("conversion_origin")
+                if origin is None:
+                    continue
+                if not isinstance(origin, dict) or set(origin) != {
+                    "batch_id", "source_format", "source_name", "source_layer", "source_frame",
+                    "manifest", "manifest_sha256", "conversion_status",
+                }:
+                    raise ValueError()
+                if (
+                    resource["kind"] != "shapefile"
+                    or not re.fullmatch(r"src_[a-f0-9]{16}", origin["batch_id"])
+                    or any(len(origin[key]) > 160 for key in ("source_name", "source_layer", "source_frame"))
+                    or origin["source_format"] not in {"gdb", "mxd"}
+                    or any(not isinstance(origin[key], str) or not origin[key]
+                           for key in ("source_name", "source_layer", "manifest", "conversion_status"))
+                    or not isinstance(origin["source_frame"], str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", origin["manifest_sha256"])
+                    or not Path(origin["manifest"]).is_absolute()
+                    or Path(origin["manifest"]).parent != Path(resource["inspection"]["source"]).parent
+                    or Path(origin["manifest"]).name != (
+                        "conversion-report.json" if origin["source_format"] == "gdb"
+                        else "mxd-export-manifest.json"
+                    )
+                ):
+                    raise ValueError()
+                current = (origin["source_name"], origin["source_format"], origin["manifest"])
+                previous = batch_sources.setdefault(origin["batch_id"], current)
+                if previous != current:
+                    raise ValueError()
             if any(
                 selection["kind"] == "directory"
                 and output.resolve().is_relative_to(Path(selection["path"]))
@@ -330,6 +369,7 @@ def validate_plan(plan: dict) -> None:
 
 
 def verify_artifacts(plan: dict) -> None:
+    from .conversion_batches import verify_conversion_origins
     from .datasets import DatasetError
     from .imports import prepare_imports, validate_import_intent, verify_import_intent
 
@@ -349,6 +389,10 @@ def verify_artifacts(plan: dict) -> None:
             if not all(isinstance(source, str) and Path(source).is_absolute() for source in sources):
                 raise ConfigError("INVALID_PLAN", "旧计划缺少可核对的源文件路径；请重新生成计划。")
             validate_import_intent(prepare_imports(sources), plan["resources"])
+    except DatasetError as exc:
+        raise ConfigError(exc.code, str(exc)) from exc
+    try:
+        verify_conversion_origins(plan["resources"])
     except DatasetError as exc:
         raise ConfigError(exc.code, str(exc)) from exc
     for resource in plan["resources"]:

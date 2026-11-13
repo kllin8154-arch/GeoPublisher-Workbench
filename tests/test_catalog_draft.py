@@ -250,3 +250,64 @@ def test_catalog_draft_rejects_unc_output_without_network_access(tmp_path, monke
     with pytest.raises(CatalogError) as err:
         generate_catalog_draft(plan, r"\\untrusted-file-server\share\new-catalog-folder")
     assert err.value.code == "INVALID_CATALOG_DRAFT"
+
+
+def test_gdb_two_sheets_become_database_parent_and_children(tmp_path):
+    """The JSON is only SQL input; final parent/children are INSERTs into node table."""
+    plan_file = fixture_plan(tmp_path)
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    source2 = tmp_path / "synthetic_second.shp"
+    source2.write_bytes(b"synthetic")
+    # Reuse the fixture's second resource slot for another SHP in the same batch.
+    second = plan["resources"][1]
+    second["kind"] = "shapefile"
+    second["target_name"] = "synthetic_second"
+    second["inspection"]["source"] = str(source2)
+    second["inspection"]["crs"] = "EPSG:4490"
+    second["artifact"]["source_hashes"] = [
+        {"path": str(source2), "sha256": "a" * 64}
+    ]
+    shared = {
+        "batch_id": "src_0123456789abcdef", "source_format": "gdb",
+        "source_name": "多个图幅.gdb", "source_frame": "",
+        "manifest": str(tmp_path / "some_conversion" / "conversion-report.json"),
+        "manifest_sha256": "a" * 64, "conversion_status": "EXPORTED",
+    }
+    for index, resource in enumerate(plan["resources"], start=1):
+        resource["conversion_origin"] = {
+            **shared, "source_layer": f"图幅{index:02d}",
+        }
+    plan["plan_hash"] = fingerprint({k: v for k, v in plan.items() if k != "plan_hash"})
+    plan_file.write_text(json.dumps(plan), encoding="utf-8")
+    result = generate_catalog_draft(plan_file, tmp_path / "gdb-draft")
+    profile = read_profile(result)
+    assert result["source_parent_count"] == 1
+    assert len(profile["groups"]) == 2
+    parent = profile["groups"][1]
+    assert parent["title"] == "多个图幅.gdb"
+    assert parent["parent"] == PENDING_GROUP
+    assert all(layer["parent"] == parent["code"] for layer in profile["layers"])
+    assert all(layer["source_format"] == "gdb" for layer in profile["layers"])
+    assert all(layer["conversion_reviewed"] is False for layer in profile["layers"])
+    assert profile["schema_verified"] is False
+    assert build_business_tree_sql(profile, tmp_path / "blocked")["status"] == "BLOCKED_PENDING_REVIEW"
+
+    # Simulated *human review* of schema, original conversion and real WMS evidence.
+    # This verifies generated database INSERT ordering, never executes it.
+    profile["groups"] = [{**parent, "parent": "existing_scale", "classification_reviewed": True}]
+    profile["existing_parents"] = [{"code": "existing_scale", "title": "1:5万基础地质图"}]
+    profile["schema_verified"] = True
+    png = plan_file.parent / "r0001" / "preview.png"
+    for layer in profile["layers"]:
+        layer["classification_reviewed"] = True
+        layer["conversion_reviewed"] = True
+        layer["wms"] = {"status": "PASSED", "visual_reviewed": True, "png": str(png)}
+    done = build_business_tree_sql(profile, tmp_path / "ready-sql")
+    assert done["status"] == "SQL_GENERATED_NOT_EXECUTED"
+    assert done["registered"] is False
+    sql = Path(done["registration_sql"]).read_text(encoding="utf-8")
+    node_sql = sql.split('INSERT INTO "review_nodes"', 1)[1]
+    assert node_sql.index(parent["code"]) < node_sql.index("synthetic_faults")
+    assert 'INSERT INTO "review_nodes"' in sql
+    assert 'INSERT INTO "review_services"' in sql
+    assert "COMMIT;" in sql

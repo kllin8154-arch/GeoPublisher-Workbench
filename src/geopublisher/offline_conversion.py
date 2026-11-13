@@ -180,14 +180,18 @@ def run_offline_conversion(kind: str, source: Path | str, executable: Path | str
         except (OSError, ValueError):
             raise OfflineConversionError("OFFLINE_REPORT_INVALID", "转换报告损坏；请检查本地任务目录。") from None
     success_rows = [row for row in items if row.get("status") == "EXPORTED"]
+    shp_rows = (
+        [row for row in items if row.get("status") in ("EXPORTED", "SHP_EXPORTED_LYR_FAILED")]
+        if kind == "mxd" else success_rows
+    )
     canceled = cancel_flag.exists() or any(row.get("status") == "CANCELLED" for row in items)
     all_ok = return_code == 0 and bool(items) and len(success_rows) == len(items)
     result = {
         "kind": kind, "status": "SUCCEEDED" if all_ok else "CANCELLED" if canceled else "INCOMPLETE",
         "source": str(src), "output": str(destination), "job": str(job),
         "report": str(report_path) if report_path.is_file() else None,
-        "converted": len(success_rows), "total": len(items),
+        "converted": len(shp_rows), "total": len(items),
         "exit_code": return_code, "seconds": round(time.monotonic() - started, 2),
     }
-    notify({"text": f"本地转换结束：成功 {len(success_rows)} / {len(items)}；状态 {result['status']}。"})
+    notify({"text": f"本地转换结束：成功生成可用输出 {len(shp_rows)} / {len(items)}；状态 {result['status']}。"})
     return result

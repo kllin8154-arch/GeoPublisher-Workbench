@@ -332,7 +332,7 @@ class MainWindow(QMainWindow):
         self.server_cancel_button.setEnabled(False)
         self.server_cancel_button.clicked.connect(lambda: self._cancel.set())
         self.server_deploy_button.setToolTip("SSH/SFTP 连接与 Linux 本机分阶段交付；不自动修改 GeoServer 或业务数据库。")
-        self.business_tree_button.setToolTip("选择发布任务 plan.json 自动整理待分类图幅；或选择业务目录 JSON 生成审核 SQL。")
+        self.business_tree_button.setToolTip("按每份 GDB/MXD 生成业务数据库父节点和图幅子节点的审核清单；核验后生成 PostgreSQL 登记 SQL。")
         self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
         for widget in (self.new_button, self.restore_button, self.history_button):
@@ -404,6 +404,7 @@ class MainWindow(QMainWindow):
             ("添加文件", self._choose_sources),
             ("添加目录", self._choose_source_folder),
             ("GDB / MXD / LYR 转换", self._arcgis_conversion),
+            ("导入整批转换图幅", self._choose_conversion_batch),
             ("清空", self._clear_sources),
         ):
             button = QPushButton(label)
@@ -576,7 +577,7 @@ class MainWindow(QMainWindow):
         self.result_guidance.setTextFormat(Qt.TextFormat.PlainText)
         self.result_guidance.setWordWrap(True)
         box.addWidget(self.result_guidance)
-        self.result_flow = QLabel("地图服务 → 人工看图 → 未分类目录初稿 → 业务库登记（单独审核）")
+        self.result_flow = QLabel("GeoServer 发布 → WMS 人工验收 → 数据库父子节点草稿 → 审核 SQL → 业务库登记")
         self.result_flow.setTextFormat(Qt.TextFormat.PlainText)
         self.result_flow.setWordWrap(True)
         self.result_flow.setObjectName("muted")
@@ -613,7 +614,7 @@ class MainWindow(QMainWindow):
         self.view_wms_button = QPushButton("打开 WMS 验收图")
         self.view_wms_button.setEnabled(False)
         self.view_wms_button.clicked.connect(self._open_wms_preview)
-        self.result_catalog_button = QPushButton("生成业务目录初稿")
+        self.result_catalog_button = QPushButton("生成数据库节点草稿")
         self.result_catalog_button.setObjectName("primary")
         self.result_catalog_button.setEnabled(False)
         self.result_catalog_button.clicked.connect(
@@ -993,10 +994,21 @@ class MainWindow(QMainWindow):
         )
         self.activity.setText(summary)
         if status != "SUCCEEDED":
-            QMessageBox.warning(
-                self, "转换未全部完成",
-                summary + "\n已生成的报告和中间文件保留在新任务目录；请先检查，不自动加入发布。",
-            )
+            if kind == "mxd" and status == "INCOMPLETE" and success > 0:
+                answer = QMessageBox.question(
+                    self, "部分图幅可用", summary
+                    + "\n\n本次只导入转换清单中成功的 SHP，失败及跳过图层不会加入。"
+                    "LYR 样式失败的图层需另行核对。是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self._attach_conversion_batch(result["output"])
+            else:
+                QMessageBox.warning(
+                    self, "转换未全部完成",
+                    summary + "\n报告和中间文件已保留；未将任何图层自动加入发布。",
+                )
             return
         if kind == "mxd":
             message = summary + "\n\n是否将导出的 SHP 加入发布任务？LYR 样式可继续在 QGIS 离线转换。"
@@ -1010,11 +1022,39 @@ class MainWindow(QMainWindow):
         if choice != QMessageBox.StandardButton.Yes:
             return
         if kind == "mxd":
-            self.add_sources([result["output"]])
+            self._attach_conversion_batch(result["output"])
         else:
             self.add_sources([result["source"]])
             self.sld_directory.setText(result["output"])
             self.advanced_import_button.setChecked(True)
+
+    def _choose_conversion_batch(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择 GDB/MXD 批量转换成果目录", str(self._work_dir)
+        )
+        if directory:
+            self._attach_conversion_batch(directory)
+
+    def _attach_conversion_batch(self, directory: Path | str) -> None:
+        """Only attach recorded successful SHPs, keeping lineage for database nodes."""
+        from .conversion_batches import load_conversion_batch
+        from .datasets import DatasetError
+
+        try:
+            batch = load_conversion_batch(directory)
+        except (DatasetError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "转换成果未通过核验", str(exc))
+            return
+        layers = batch["layers"]
+        if not layers:
+            QMessageBox.warning(self, "没有可加入的图幅", "报告中没有成功导出的 SHP，请查看转换失败原因。")
+            return
+        self.add_sources([item["shp_path"] for item in layers])
+        self.activity.setText(
+            f"已从 {batch['source_name']} 加入 {len(layers)} 个成功导出的图层；"
+            f"其余 {len(batch['excluded'])} 个已排除。下一步进行逐图层预检。\n"
+            "发布完成后可生成数据库父子节点审核 SQL；真正写入目录表仍需校验、确认。"
+        )
 
     def _open_offline_report(self) -> None:
         if self._offline_report_path is not None and self._offline_report_path.is_file():
@@ -1286,7 +1326,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if choice == QMessageBox.StandardButton.Yes:
-            self.add_sources([report["destination"]])
+            self._attach_conversion_batch(report["destination"])
 
     def _choose_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择任务产物目录", self.output_root.text())
@@ -1387,6 +1427,10 @@ class MainWindow(QMainWindow):
         raster_summary = _raster_summary(plan)
         if raster_summary:
             summary += "\n" + raster_summary
+        source_files = {r["conversion_origin"]["batch_id"] for r in resources
+                        if r.get("conversion_origin")}
+        if source_files:
+            summary += f"\n已识别 {len(source_files)} 份 GDB/MXD 转换来源；数据库登记时每份来源建一个父节点。"
         self.plan_summary.setText(summary)
         self.resources_table.setRowCount(len(resources))
         details = []
@@ -1414,6 +1458,10 @@ class MainWindow(QMainWindow):
                 item.setToolTip(str(value))
                 self.resources_table.setItem(row, column, item)
             details.append(f"{resource['target_name']}：{state}")
+            origin = resource.get("conversion_origin")
+            if origin:
+                details.append(f"  来源：{origin['source_name']} → {origin['source_layer']}")
+                details.append("  发布后需人工复核数据库父子节点及转换样式。")
             rewritten = resource.get("sld_field_rewrite")
             if isinstance(rewritten, dict):
                 changes = rewritten.get("changes", [])
@@ -2212,14 +2260,14 @@ class MainWindow(QMainWindow):
             except (CatalogError, ConfigError, ValueError, OSError) as exc:
                 QMessageBox.warning(self, "无法从任务整理目录", str(exc))
                 return
-            self.activity.setText("目录初稿已生成，默认全部未分类；请人工选择专题、比例尺与现有父节点。")
+            self.activity.setText("数据库目录草稿已生成：GDB/MXD 按源文件生成父节点，子节点为其图层；请核对业务父目录。")
             if from_result:
                 self.result_flow.setText(self.result_flow.text().replace(
                     "可生成未分类初稿", "已生成未分类初稿（待分类）"
                 ))
             QMessageBox.information(
                 self, "图幅目录初稿已生成",
-                f"已整理 {draft['layer_count']} 个图层。\n\n"
+                f"已整理 {draft['source_parent_count']} 个源文件父节点、{draft['layer_count']} 个图层子节点。\n\n"
                 f"本地文件：{draft['draft']}\n\n"
                 "初稿不会连接数据库或 GeoServer，所有图层仍处于未分类、未验收状态。"
                 "请根据真实业务目录、转换报告和 WMS 实图填写后，再生成 SQL。",

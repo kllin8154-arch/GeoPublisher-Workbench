@@ -78,3 +78,20 @@ Task getter includes `task_id`,`status`,`plan`, timestamps. Owned object getter 
 Plan persists absolute resolved input references internally, hashes, fixed target names, expected resources, and unique ownership markers. New versions get a deterministic task-derived suffix fixed once. Verify target absence again before create. Workspaces should be pre-existing for first usable release; explicit workspace creation may be added as a controlled option. One resource → one store and independently named style to avoid shared dependencies.
 
 For unknown create/update response, compare remote state with recorded intent. Without positive ownership/content evidence, MANUAL_ACTION_REQUIRED rather than replay/delete. Existing skipped resources remain SKIPPED, not PUBLISHED. Report WMS success separately from SQL generation and manual catalog registration.
+
+
+## Optional immutable conversion lineage in plan v2
+
+A resource prepared from an explicitly recorded offline GDB/MXD SHP output may
+carry conversion_origin: batch_id, source_format, source_name, source_layer,
+source_frame, manifest (local absolute path), manifest_sha256 and conversion_status.
+The plan hash freezes these values. build_plan reads and validates the matching
+local GDB/MXD manifest; verify_artifacts verifies the manifest and membership
+again before connecting to GeoServer. An unrecorded, failed or modified SHP in
+a conversion directory cannot silently join the batch.
+
+The catalog draft groups these resources by source file into database-node
+parent candidates, each layer pointing to the new parent's key. This is a
+pending PostgreSQL INSERT profile, not an in-memory UI-only tree or an executed
+database mutation. The site schema, actual topic/scale parent, WMS visual
+acceptance, conversion/style acceptance and reviewed SQL remain mandatory.

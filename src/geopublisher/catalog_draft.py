@@ -182,9 +182,29 @@ def generate_catalog_draft(
     ]
     review: list[dict[str, Any]] = []
     seen: set[str] = set()
+    batches: dict[str, dict] = {}
+    for resource in plan["resources"]:
+        origin = resource.get("conversion_origin")
+        if not origin:
+            continue
+        code = origin["batch_id"]
+        prior = batches.get(code)
+        if prior and (prior["source_name"], prior["source_format"], prior["manifest"]) != (
+            origin["source_name"], origin["source_format"], origin["manifest"]
+        ):
+            _missing("同一批次的 GDB/MXD 来源信息不一致。")
+        batches[code] = origin
+    if len(batches) > 199:
+        _missing("单次最多整理 199 个 GDB/MXD 来源文件的父节点，请拆分批次。")
+    for code, origin in sorted(batches.items()):
+        template["groups"].append({
+            "code": code, "title": origin["source_name"], "parent": PENDING_GROUP,
+            "display_order": len(template["groups"]) * 10, "layer_index": len(template["groups"]),
+            "classification_reviewed": False,
+        })
     for i, resource in enumerate(plan["resources"], start=1):
         code = resource["target_name"]
-        if code == PENDING_GROUP or code in seen:
+        if code == PENDING_GROUP or code in batches or code in seen:
             _missing("多个发布图层名称重复或与保留的未分类目录名称冲突。")
         seen.add(code)
         kind = resource["kind"]
@@ -192,19 +212,23 @@ def generate_catalog_draft(
             _missing("当前发布计划不是受支持的 SHP/单 GeoTIFF 资源。")
         recorded = reported.get(resource["resource_id"], {})
         preview = _source_preview(plan, recorded, resource)
+        origin = resource.get("conversion_origin")
         wms = {"status": "PENDING", "visual_reviewed": False}
         if preview:
             wms["png"] = preview
         template["layers"].append({
             "code": code, "title": code,
-            "parent": PENDING_GROUP,
+            "parent": origin["batch_id"] if origin else PENDING_GROUP,
             "service_key": code,
             "qualified_name": f"{workspace}:{code}",
-            "source_format": "shp" if kind == "shapefile" else "geotiff",
+            "source_format": origin["source_format"] if origin else (
+                "shp" if kind == "shapefile" else "geotiff"
+            ),
             "publish_kind": kind, "crs": resource["inspection"]["crs"],
             "display_order": i * 10, "layer_index": i,
             "zoom_start": 1, "zoom_end": 29,
             "classification_reviewed": False,
+            **({"conversion_reviewed": False} if origin else {}),
             "wms": wms,
         })
         review.append({
@@ -213,6 +237,9 @@ def generate_catalog_draft(
             "kind": kind,
             "recorded_status": recorded.get("status", "NO_REPORT"),
             "preview_prefilled": preview is not None,
+            "source_file": origin["source_name"] if origin else None,
+            "source_layer": origin["source_layer"] if origin else None,
+            "parent_node_code": origin["batch_id"] if origin else PENDING_GROUP,
             "required_manual_reviews": [
                 "专题、比例尺、父节点、业务服务名称",
                 "源数据是否来自 MXD/GDB，转换报告与 SLD 样式",
@@ -241,11 +268,13 @@ def generate_catalog_draft(
         "original_task_id": plan["task_id"],
         "matching_report": report_status,
         "layer_count": len(review),
+        "source_parent_count": len(batches),
         "layers": review,
         "notes": [
             "自动提取的是发布计划中的 SHP/GeoTIFF 图层，不代表已从服务器确认发布成功。",
-            "真实 MXD/GDB 来源不一定能从 SHP 计划推断，必须手工注明与核对。",
-            "需将图层移至正确专题及比例尺父目录，删除 draft_unclassified，并核实字段与 WMS。",
+            "通过本机转换清单核验的 MXD/GDB 图幅已按源文件生成待审核父节点；普通 SHP 来源不自动猜测。",
+            "父子目录最终登记到现场业务数据库的节点表；本地 JSON 只是待审核 SQL 输入，不代表已入库。",
+            "需将文件父节点接入真实专题/比例尺父目录，删除 draft_unclassified，并核实字段与 WMS。",
             "schema_verified=false、classification_reviewed=false、wms=PENDING，不能直接登记数据库。",
         ],
     }
@@ -254,4 +283,5 @@ def generate_catalog_draft(
     )
     return {"status": overview["status"], "registered": False,
             "output": str(output_path), "draft": str(file),
-            "layer_count": len(review), "report": str(output_path / "draft_review.json")}
+            "layer_count": len(review), "source_parent_count": len(batches),
+            "report": str(output_path / "draft_review.json")}

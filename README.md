@@ -173,7 +173,7 @@ GitHub Actions 配置了 Linux/Windows 单元测试、wheel 构建和 Windows Py
 
     uv run --frozen --no-sync geopub catalog-draft D:\LocalGIS\task-xxx\plan.json --output D:\LocalGIS\catalog-draft-new
 
-新初稿**不会猜测比例尺或父节点**，所有图层先放入 draft_unclassified，强制未审核，不能直接写入数据库。对已完成 WMS 的发布结果，仅预填任务内有效 PNG 的位置，仍需业务人员检查视觉、样式、真实数据来源与目录归属。完整流程见 [业务分类与比例尺工作流](docs/BUSINESS-CATALOG-WORKFLOW.md)。
+新初稿**不会猜测专题或比例尺**：经过校验的 GDB/MXD 转换来源会生成“一个来源文件父节点 → 每个独立图层子节点”的待审核目录，其他 SHP/TIFF 留在 draft_unclassified；所有待分类的来源父节点仍在临时根节点下，不会自动登记数据库。对已完成 WMS 的发布结果，仅预填任务内有效 PNG 路径，视觉、样式、真实图幅范围与业务归属仍需人工检查。参见 [整库 GDB/MXD 批量发布与父子目录](docs/BATCH-GDB-MXD-TREE.md) 和 [业务分类工作流](docs/BUSINESS-CATALOG-WORKFLOW.md)。
 
 
 ## Linux 服务器实际交付（SSH/SFTP / Linux 本机，2026-11）

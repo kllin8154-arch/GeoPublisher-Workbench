@@ -640,7 +640,7 @@ def test_gdb_preview_summary_explains_field_risks_without_automatic_export():
 def test_gdb_ui_inspects_before_conversion_and_never_uses_server(
     window, tmp_path, monkeypatch
 ):
-    from geopublisher import datasets, gdb_export
+    from geopublisher import batch_lineage, datasets, gdb_export
 
     source = tmp_path / "synthetic.gdb"
     source.mkdir()
@@ -679,6 +679,7 @@ def test_gdb_ui_inspects_before_conversion_and_never_uses_server(
         assert only_layers == ["TEST"]
         assert output.parent == tmp_path
         output.mkdir()
+        (output / "synthetic.shp").write_bytes(b"synthetic")
         seen.append(("CONVERT_GDB_ONLY", source.name))
         return {
             "destination": str(output),
@@ -687,6 +688,10 @@ def test_gdb_ui_inspects_before_conversion_and_never_uses_server(
 
     monkeypatch.setattr(gdb_export, "convert_gdb", convert)
     monkeypatch.setattr(
+        batch_lineage, "verified_batch_sources",
+        lambda folder: [Path(folder) / "synthetic.shp"],
+    )
+    monkeypatch.setattr(
         window, "_start_worker",
         lambda operation, completed: completed(operation(lambda _event: None)),
     )
@@ -694,7 +699,8 @@ def test_gdb_ui_inspects_before_conversion_and_never_uses_server(
     assert seen[0][0] == "GDAL_ONLY"
     assert seen[1] == ("READ_ONLY_INSPECTION", "synthetic.gdb")
     assert seen[2] == ("CONVERT_GDB_ONLY", "synthetic.gdb")
-    assert len(confirm) == 1
+    assert confirm == []  # No extra add-to-task confirmation after local conversion.
+    assert window.sources.count() == 1
     assert "本地转换完成" in window.activity.text()
     assert window._thread is None
 
@@ -930,7 +936,7 @@ def test_qgis_helper_button_exports_local_script_without_running_qgis(window, tm
 
 def test_direct_mxd_gui_runs_worker_and_offers_shp_import(window, app, tmp_path, monkeypatch):
     """A local ArcMap selection does not execute REST or require console commands."""
-    from geopublisher import offline_conversion
+    from geopublisher import batch_lineage, offline_conversion
 
     mxd = tmp_path / "synthetic.mxd"
     mxd.write_bytes(b"fake-synthetic")
@@ -954,6 +960,10 @@ def test_direct_mxd_gui_runs_worker_and_offers_shp_import(window, app, tmp_path,
         }
 
     monkeypatch.setattr(offline_conversion, "run_offline_conversion", convert)
+    monkeypatch.setattr(
+        batch_lineage, "verified_batch_sources",
+        lambda folder: [Path(folder) / "demo.shp"],
+    )
     monkeypatch.setattr(desktop.QFileDialog, "getOpenFileName",
                         lambda *_args, **_kwargs: (str(mxd), "ArcMap (*.mxd)"))
     monkeypatch.setattr(QMessageBox, "question",
@@ -963,7 +973,7 @@ def test_direct_mxd_gui_runs_worker_and_offers_shp_import(window, app, tmp_path,
     wait_until(app, lambda: window._thread is None)
     assert [item[0] for item in calls] == ["mxd"]
     assert window.sources.count() == 1
-    assert window.sources.item(0).text() == str(exported)
+    assert window.sources.item(0).text() == str(exported / "demo.shp")
     assert window.offline_report_button.isEnabled()
     assert not window.offline_cancel_button.isVisible()
 
@@ -998,7 +1008,7 @@ def test_direct_lyr_gui_attaches_verified_sld_dir_after_confirmation(window, app
     assert window.sources.count() == 1
     assert window.sources.item(0).text() == str(source)
     assert window.sld_directory.text() == str(output)
-    assert window.advanced_import_button.isChecked()
+    assert not window.advanced_import_button.isChecked()  # Ready without opening advanced options.
 
 
 def test_direct_conversion_safe_cancel_uses_worker_checkpoint(window, app, tmp_path, monkeypatch):
@@ -1286,3 +1296,78 @@ def test_batch_import_review_shows_file_parent_and_individual_sheet_mapping(wind
     assert "基础地质.gdb / 第一幅" in window.check_details.toPlainText()
     assert "目录父子关系待审核" in window.check_details.toPlainText()
     assert window._plan is plan
+
+
+def test_desktop_simple_mode_has_three_clear_entry_points(window):
+    from PySide6.QtWidgets import QPushButton
+
+    assert not window.advanced_import_options.isVisible()
+    assert not window.tools_panel.isVisible()
+    names = [item.text() for item in window.findChildren(QPushButton)]
+    assert "选择整个 GDB" in names
+    assert "选择 MXD 地图" in names
+    assert "添加 SHP / TIFF" in names
+    assert "下一步：检查图幅" in names
+    assert window.strategy.currentData() == "fail"
+    window.more_tools_button.click()
+    assert window.more_tools_button.isChecked()
+    assert not window.advanced_import_button.isChecked()
+
+
+def test_select_conversion_directory_adds_only_verified_sheets(window, tmp_path, monkeypatch):
+    from geopublisher.batch_lineage import verified_batch_sources
+
+    folder = tmp_path / "synthetic-batch"
+    folder.mkdir()
+    exported = []
+    for label in ("S001", "S002"):
+        file = folder / (label + ".shp")
+        file.write_bytes(b"synthetic-" + label.encode("ascii"))
+        (folder / (label + ".lyr")).write_bytes(b"synthetic style")
+        exported.append(file)
+    failed = folder / "BAD.shp"
+    failed.write_bytes(b"unfinished")
+    (folder / "mxd-export-manifest.json").write_text(json.dumps({
+        "schema_version": 1, "converter": "ArcMap-10x-local",
+        "source_format": "MXD", "files_relative_to_output": True,
+        "source_filename": "合成多图幅.mxd",
+        "items": [
+            {"source_layer": "第1幅", "shp": "S001.shp", "lyr": "S001.lyr", "status": "EXPORTED"},
+            {"source_layer": "第2幅", "shp": "S002.shp", "lyr": "S002.lyr", "status": "EXPORTED"},
+            {"source_layer": "失败", "shp": "BAD.shp", "lyr": "BAD.lyr", "status": "FAILED"},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+    assert verified_batch_sources(folder) == exported
+    monkeypatch.setattr(desktop.QFileDialog, "getExistingDirectory",
+                        lambda *_args, **_kwargs: str(folder))
+    window._choose_source_folder()
+    assert window.sources.count() == 2
+    assert {window.sources.item(i).text() for i in range(2)} == {str(path) for path in exported}
+    assert not window.execute_button.isEnabled()
+    assert "已加入 2 个" in window.activity.text()
+
+
+def test_incomplete_mxd_import_selects_successes_without_confirmation(window, tmp_path, monkeypatch):
+    folder = tmp_path / "synthetic-mxd-output"
+    folder.mkdir()
+    for name in ("GOOD", "BAD"):
+        (folder / (name + ".shp")).write_bytes(b"synthetic")
+    (folder / "GOOD.lyr").write_bytes(b"fake lyr")
+    report = folder / "mxd-export-manifest.json"
+    report.write_text(json.dumps({
+        "converter": "ArcMap-10x-local", "source_format": "MXD",
+        "source_filename": "two_sheets.mxd", "files_relative_to_output": True,
+        "items": [
+            {"source_layer": "good", "status": "EXPORTED", "shp": "GOOD.shp", "lyr": "GOOD.lyr"},
+            {"source_layer": "bad", "status": "FAILED", "shp": "BAD.shp", "lyr": "BAD.lyr"},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *_args, **_kwargs: pytest.fail("No second confirmation expected"))
+    window._show_offline_conversion_result({
+        "kind": "mxd", "status": "INCOMPLETE", "converted": 1, "total": 2,
+        "output": str(folder), "job": str(folder), "report": str(report),
+    })
+    assert window.sources.count() == 1
+    assert window.sources.item(0).text() == str(folder / "GOOD.shp")
+    assert not window.execute_button.isEnabled()

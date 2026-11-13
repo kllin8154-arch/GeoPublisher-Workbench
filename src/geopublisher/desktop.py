@@ -335,16 +335,27 @@ class MainWindow(QMainWindow):
         self.business_tree_button.setToolTip("选择发布任务 plan.json 自动整理待分类图幅；或选择业务目录 JSON 生成审核 SQL。")
         self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
-        for widget in (self.new_button, self.restore_button, self.history_button):
+        for widget in (self.new_button, self.restore_button):
             toolbar.addWidget(widget)
             self._editable.append(widget)
         toolbar.addStretch()
-        toolbar.addWidget(self.business_tree_button)
-        toolbar.addWidget(self.server_deploy_button)
-        toolbar.addWidget(self.server_cancel_button)
-        toolbar.addWidget(self.help_button)
-        toolbar.addWidget(self.folder_button)
+        self.more_tools_button = QPushButton("更多工具")
+        self.more_tools_button.setCheckable(True)
+        toolbar.addWidget(self.more_tools_button)
+        self._editable.append(self.more_tools_button)
         box.addLayout(toolbar)
+        self.tools_panel = QWidget()
+        tools_row = QHBoxLayout(self.tools_panel)
+        tools_row.setContentsMargins(0, 0, 0, 0)
+        for widget in (
+            self.history_button, self.business_tree_button, self.server_deploy_button,
+            self.server_cancel_button, self.help_button, self.folder_button,
+        ):
+            tools_row.addWidget(widget)
+        tools_row.addStretch()
+        self.tools_panel.hide()
+        self.more_tools_button.toggled.connect(self.tools_panel.setVisible)
+        box.addWidget(self.tools_panel)
         self.new_button.clicked.connect(self._new_task)
         self.restore_button.clicked.connect(self._choose_plan)
         self.history_button.clicked.connect(self._toggle_history)
@@ -392,19 +403,29 @@ class MainWindow(QMainWindow):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        hint = QLabel("第 1 步：把 SHP、TIFF 文件或文件夹拖入下方，也可以点「添加文件」。本步只处理本地数据，不会立即上传。")
+        hint = QLabel("选择一个数据来源，系统会批量处理图层并自动整理来源关系。此步只在本地处理，不会上传。")
         hint.setWordWrap(True)
         box.addWidget(hint)
+        quick_row = QHBoxLayout()
+        for label, action in (
+            ("选择整个 GDB", self._choose_gdb_and_export),
+            ("选择 MXD 地图", lambda: self._start_direct_conversion("mxd")),
+            ("添加 SHP / TIFF", self._choose_sources),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(action)
+            quick_row.addWidget(button)
+            self._editable.append(button)
+        box.addLayout(quick_row)
         self.sources = SourceList()
         self.sources.paths_dropped.connect(self.add_sources)
         self._editable.append(self.sources)
         box.addWidget(self.sources)
         row = QHBoxLayout()
         for label, action in (
-            ("添加文件", self._choose_sources),
-            ("添加目录", self._choose_source_folder),
-            ("整库批量导入（GDB / MXD / LYR）", self._arcgis_conversion),
-            ("清空", self._clear_sources),
+            ("添加已有数据目录", self._choose_source_folder),
+            ("其他转换工具", self._arcgis_conversion),
+            ("清空列表", self._clear_sources),
         ):
             button = QPushButton(label)
             button.clicked.connect(action)
@@ -414,7 +435,7 @@ class MainWindow(QMainWindow):
         self.source_count = QLabel("尚未添加数据")
         row.addWidget(self.source_count)
         box.addLayout(row)
-        self.source_hint = QLabel("整库 GDB/MXD 可批量转换：每个合格图层单独发布；目录初稿按原文件生成图幅集父节点。多个 TIFF 仍需明确确认独立发布。")
+        self.source_hint = QLabel("一个 GDB/MXD 中的合格图层可逐个发布；发布后生成业务数据库父子节点审核草稿，实际入库需单独核验。")
         self.source_hint.setObjectName("muted")
         self.source_hint.setWordWrap(True)
         box.addWidget(self.source_hint)
@@ -432,21 +453,19 @@ class MainWindow(QMainWindow):
             source_model.modelReset,
         ):
             signal.connect(self._sources_changed)
-        basic_form = QFormLayout()
         self.strategy = QComboBox()
         self.strategy.addItem("同名时停止（推荐）", "fail")
         self.strategy.addItem("跳过同名图层", "skip")
         self.strategy.addItem("创建独立新版本", "new-version")
         self.strategy.setToolTip("推荐保留「同名时停止」。跳过表示不会更新该图层；新版本会使用独立名称。")
-        basic_form.addRow("遇到同名图层", self.strategy)
         self.output_root = QLineEdit(str(self._work_dir))
-        basic_form.addRow("任务记录保存到", self._path_row(self.output_root, self._choose_output))
-        box.addLayout(basic_form)
-        self.advanced_import_button = QPushButton("展开高级选项（样式、编码、坐标系、图层名称）")
+        self.advanced_import_button = QPushButton("高级设置（一般无需修改）")
         self.advanced_import_button.setCheckable(True)
         box.addWidget(self.advanced_import_button)
         self.advanced_import_options = QWidget()
         advanced_form = QFormLayout(self.advanced_import_options)
+        advanced_form.addRow("遇到同名图层", self.strategy)
+        advanced_form.addRow("任务记录保存到", self._path_row(self.output_root, self._choose_output))
         self.style_path = QLineEdit()
         self.style_path.setPlaceholderText("留空时自动生成简单样式")
         advanced_form.addRow("单图层 SLD 样式", self._path_row(self.style_path, self._choose_style))
@@ -476,7 +495,7 @@ class MainWindow(QMainWindow):
         self.advanced_import_button.toggled.connect(self.advanced_import_options.setVisible)
         self.advanced_import_button.toggled.connect(
             lambda expanded: self.advanced_import_button.setText(
-                "收起高级选项" if expanded else "展开高级选项（样式、编码、坐标系、图层名称）"
+                "收起高级设置" if expanded else "高级设置（一般无需修改）"
             )
         )
         self._editable.append(self.advanced_import_button)
@@ -496,7 +515,7 @@ class MainWindow(QMainWindow):
         offline_controls.addStretch()
         box.addLayout(offline_controls)
         box.addStretch()
-        self.inspect_button = QPushButton("下一步：检查数据")
+        self.inspect_button = QPushButton("下一步：检查图幅")
         self.inspect_button.setObjectName("primary")
         self.inspect_button.clicked.connect(self._start_plan)
         box.addWidget(self.inspect_button, 0, Qt.AlignmentFlag.AlignRight)
@@ -529,7 +548,7 @@ class MainWindow(QMainWindow):
         self.plan_summary.setTextFormat(Qt.TextFormat.PlainText)
         self.plan_summary.setWordWrap(True)
         box.addWidget(self.plan_summary)
-        self.review_guidance = QLabel("请确认图层名称、坐标系和检查结果。只有预检通过才能进入发布。")
+        self.review_guidance = QLabel("检查图幅、坐标系和目标服务。确认无误后才会发布到 GeoServer。")
         self.review_guidance.setObjectName("muted")
         self.review_guidance.setTextFormat(Qt.TextFormat.PlainText)
         self.review_guidance.setWordWrap(True)
@@ -613,7 +632,7 @@ class MainWindow(QMainWindow):
         self.view_wms_button = QPushButton("打开 WMS 验收图")
         self.view_wms_button.setEnabled(False)
         self.view_wms_button.clicked.connect(self._open_wms_preview)
-        self.result_catalog_button = QPushButton("生成业务目录初稿")
+        self.result_catalog_button = QPushButton("生成数据库目录草稿")
         self.result_catalog_button.setObjectName("primary")
         self.result_catalog_button.setEnabled(False)
         self.result_catalog_button.clicked.connect(
@@ -900,9 +919,15 @@ class MainWindow(QMainWindow):
         self.add_sources(paths)
 
     def _choose_source_folder(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "选择数据目录")
+        selected = QFileDialog.getExistingDirectory(self, "选择数据目录或已转换的 GDB/MXD 成果")
         if selected:
-            self.add_sources([selected])
+            folder = Path(selected)
+            if any((folder / name).exists() for name in (
+                "conversion-report.json", "mxd-export-manifest.json"
+            )):
+                self._attach_conversion_batch(folder)
+            else:
+                self.add_sources([selected])
 
     def _choose_style(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择 SLD 样式", "", "SLD 样式 (*.sld)")
@@ -992,29 +1017,40 @@ class MainWindow(QMainWindow):
             "原始文件不变。复杂符号、中文标注及样式视觉效果需要人工核对。"
         )
         self.activity.setText(summary)
+        if kind == "mxd" and status in {"SUCCEEDED", "INCOMPLETE"} and success > 0:
+            # Only valid EXPORTED rows are added, never partial/failed SHPs.
+            if self._attach_conversion_batch(result["output"]):
+                self.activity.setText(summary + "\n" + self.activity.text())
+            return
         if status != "SUCCEEDED":
             QMessageBox.warning(
                 self, "转换未全部完成",
-                summary + "\n已生成的报告和中间文件保留在新任务目录；请先检查，不自动加入发布。",
+                summary + "\n已保留本地报告，可修复后再次转换；没有加入发布任务。",
             )
             return
-        if kind == "mxd":
-            message = summary + "\n\n这些 SHP 将作为独立图层逐个检查；发布后按原 MXD 生成图幅集父节点和各图层子节点草稿。是否整批加入？LYR 样式仍需在 QGIS 处理。"
-        else:
-            message = summary + "\n\n是否加入对应 SHP，并在本任务中使用刚生成的 SLD？"
-        choice = QMessageBox.question(
-            self, "本地转换完成", message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        self.add_sources([result["source"]])
+        self.sld_directory.setText(result["output"])
+        self.activity.setText(summary + "\n已关联同名 SHP 与 SLD。请检查图幅后再确认发布。")
+
+    def _attach_conversion_batch(self, directory: Path | str) -> bool:
+        """Auto-add validated successful SHPs to the *local* selection only."""
+        from .batch_lineage import verified_batch_sources
+
+        try:
+            files = verified_batch_sources(directory)
+        except (ConfigError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "批量成果需要核对", str(exc))
+            return False
+        if not files:
+            QMessageBox.warning(self, "无可用图层", "转换报告中没有完整的成功图层，请检查报告后重试。")
+            return False
+        self.add_sources([str(path) for path in files])
+        self.activity.setText(
+            f"已加入 {len(files)} 个经清单核验的 SHP 图层。"
+            "下一步点击「检查图幅」，之后才会确认是否向 GeoServer 发布。"
+            "数据库父子节点仍需另行审核登记。"
         )
-        if choice != QMessageBox.StandardButton.Yes:
-            return
-        if kind == "mxd":
-            self.add_sources([result["output"]])
-        else:
-            self.add_sources([result["source"]])
-            self.sld_directory.setText(result["output"])
-            self.advanced_import_button.setChecked(True)
+        return True
 
     def _open_offline_report(self) -> None:
         if self._offline_report_path is not None and self._offline_report_path.is_file():
@@ -1279,16 +1315,13 @@ class MainWindow(QMainWindow):
             "字段改名、类型差异和样式须核对，跳过或失败的图层不计入发布清单。"
         )
         self.activity.setText(message)
+        self._offline_report_path = report_file if report_file.is_file() else None
+        self.offline_report_button.setEnabled(bool(self._offline_report_path))
         if not converted:
             QMessageBox.warning(self, "未生成可用 SHP", message)
             return
-        choice = QMessageBox.question(
-            self, "GDB 转换结果", message + "\n\n将成功导出的 SHP 目录加入当前发布任务吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if choice == QMessageBox.StandardButton.Yes:
-            self.add_sources([report["destination"]])
+        if self._attach_conversion_batch(report["destination"]):
+            self.activity.setText(message + "\n" + self.activity.text())
 
     def _choose_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择任务产物目录", self.output_root.text())

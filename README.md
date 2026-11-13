@@ -2,7 +2,7 @@
 
 面向实施人员的 GeoServer 自动发布工作台。Python 核心同时驱动 CLI 和中文 PySide6 桌面界面：本地预检 → 冻结发布计划 → REST 发布 → WMS 实图验收 → 任务报告与目录绑定清单。
 
-**第一次使用？先看 [三步上手指南](docs/QUICKSTART-ZH.md)**：环境设置和只读连接检查 → 拖入 SHP/TIFF 并本地预检 → 确认发布、查看地图与报告。若来源是 GDB、MXD 或 LYR，请先阅读 [离线转换与字段映射指南](docs/IMPORT-GDB-MXD-LYR.md)：GDB 可用受控 GDAL 转 SHP，MXD/LYR 则需要相应的 ArcMap/QGIS 适配工具。
+**第一次使用？** 桌面入口已简化为「选择整个 GDB / 选择 MXD 地图 / 添加 SHP-TIFF → 检查图幅 → 确认发布」。高级参数、业务目录 SQL 和服务器部署默认收起到「更多工具」；转换完成后自动选入通过本地清单验证的 SHP，仍须确认 GeoServer 发布并人工验收 WMS。参见 [三步上手指南](docs/QUICKSTART-ZH.md)、[GDB/MXD 离线转换指南](docs/IMPORT-GDB-MXD-LYR.md)和 [离线主机/服务器部署](docs/OFFLINE-OPERATOR.md)。
 
 **当前版本：0.1.0 开发预览。** 已在 Windows 10 和 Linux 的隔离环境中，使用 GeoServer 2.24.4、GDAL 3.13.3 与合成数据完成核心发布、重复执行、配置清理及上传响应丢失验证。Windows 原生桌面启动与字体烟测、受控 GDAL 已取得本地证据；完整 Windows/Linux 离线发行物与现场环境仍需验收，当前构建不等于可直接交付内网的离线安装包。详见 [验证汇总](docs/VALIDATION.md) 和 [Windows 本地验证报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。
 

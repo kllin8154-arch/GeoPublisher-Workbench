@@ -181,6 +181,7 @@ def generate_catalog_draft(
         }
     ]
     review: list[dict[str, Any]] = []
+    batch_groups: dict[str, dict] = {}
     seen: set[str] = set()
     for i, resource in enumerate(plan["resources"], start=1):
         code = resource["target_name"]
@@ -195,12 +196,32 @@ def generate_catalog_draft(
         wms = {"status": "PENDING", "visual_reviewed": False}
         if preview:
             wms["png"] = preview
+        batch = resource.get("batch_source")
+        parent = PENDING_GROUP
+        if batch:
+            parent = batch["group_code"]
+            if parent not in batch_groups:
+                if len(batch_groups) >= 199:
+                    _missing("单批图幅集数量超过目录上限 199；请按来源拆成多个任务。")
+                group = {
+                    "code": parent, "title": f"图幅集：{batch['source_filename']}（待核对）",
+                    "parent": PENDING_GROUP, "display_order": i * 10,
+                    "layer_index": 0, "classification_reviewed": False,
+                }
+                template["groups"].append(group)
+                batch_groups[parent] = group
+            elif batch_groups[parent]["title"] != f"图幅集：{batch['source_filename']}（待核对）":
+                _missing("同一图幅集标识对应多个不同来源，无法自动分组。")
         template["layers"].append({
-            "code": code, "title": code,
-            "parent": PENDING_GROUP,
+            "code": code, "title": (
+                batch["source_layer"] if batch and len(batch["source_layer"]) <= 160
+                else code
+            ),
+            "parent": parent,
             "service_key": code,
             "qualified_name": f"{workspace}:{code}",
-            "source_format": "shp" if kind == "shapefile" else "geotiff",
+            "source_format": batch["format"].lower() if batch else ("shp" if kind == "shapefile" else "geotiff"),
+            **({"conversion_reviewed": False} if batch else {}),
             "publish_kind": kind, "crs": resource["inspection"]["crs"],
             "display_order": i * 10, "layer_index": i,
             "zoom_start": 1, "zoom_end": 29,
@@ -213,6 +234,11 @@ def generate_catalog_draft(
             "kind": kind,
             "recorded_status": recorded.get("status", "NO_REPORT"),
             "preview_prefilled": preview is not None,
+            "source_batch": (
+                {"file": batch["source_filename"], "layer": batch["source_layer"],
+                 "parent": parent, "format": batch["format"]}
+                if batch else None
+            ),
             "required_manual_reviews": [
                 "专题、比例尺、父节点、业务服务名称",
                 "源数据是否来自 MXD/GDB，转换报告与 SLD 样式",
@@ -241,10 +267,18 @@ def generate_catalog_draft(
         "original_task_id": plan["task_id"],
         "matching_report": report_status,
         "layer_count": len(review),
+        "batch_count": len(batch_groups),
+        "batch_parents": [
+            {"code": group["code"], "title": group["title"], "children": sum(
+                layer["parent"] == group["code"] for layer in template["layers"]
+            )} for group in batch_groups.values()
+        ],
         "layers": review,
         "notes": [
             "自动提取的是发布计划中的 SHP/GeoTIFF 图层，不代表已从服务器确认发布成功。",
-            "真实 MXD/GDB 来源不一定能从 SHP 计划推断，必须手工注明与核对。",
+            "已核对匹配本地转换报告的 GDB/MXD 图幅会按源文件生成临时父节点；无来源证明的 SHP 保留在待分类根节点。",
+            "一个 GDB 要素类或 MXD 图层不一定等于一个真实图幅；如同层包含多个图幅，必须先按明确图幅字段拆分并检查。",
+            "原图层名称过长无法直接写入业务表时，目录显示名暂用安全编码，完整原名称在 draft_review.json 供人工修订。",
             "需将图层移至正确专题及比例尺父目录，删除 draft_unclassified，并核实字段与 WMS。",
             "schema_verified=false、classification_reviewed=false、wms=PENDING，不能直接登记数据库。",
         ],
@@ -254,4 +288,5 @@ def generate_catalog_draft(
     )
     return {"status": overview["status"], "registered": False,
             "output": str(output_path), "draft": str(file),
-            "layer_count": len(review), "report": str(output_path / "draft_review.json")}
+            "layer_count": len(review), "batch_count": len(batch_groups),
+            "report": str(output_path / "draft_review.json")}

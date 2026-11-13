@@ -250,3 +250,82 @@ def test_catalog_draft_rejects_unc_output_without_network_access(tmp_path, monke
     with pytest.raises(CatalogError) as err:
         generate_catalog_draft(plan, r"\\untrusted-file-server\share\new-catalog-folder")
     assert err.value.code == "INVALID_CATALOG_DRAFT"
+
+
+def test_whole_gdb_creates_one_parent_with_two_child_sheets_and_keeps_sql_blocked(tmp_path):
+    """Two real local SHP selections from one GDB remain separate GeoServer resources."""
+    from geopublisher.batch_lineage import conversion_batch
+    from geopublisher.imports import prepare_imports
+    from geopublisher.plans import digest_file, load_plan, verify_artifacts
+
+    file = fixture_plan(tmp_path)
+    plan = json.loads(file.read_text(encoding="utf-8"))
+    resources = plan["resources"]
+    source_a = Path(resources[0]["inspection"]["source"])
+    source_b = Path(resources[1]["inspection"]["source"]).with_suffix(".shp")
+    source_b.write_bytes(b"synthetic second SHP")
+    resources[1]["kind"] = "shapefile"
+    resources[1]["inspection"]["source"] = str(source_b)
+    sources = [source_a, source_b]
+
+    manifest = source_a.parent / "conversion-report.json"
+    rows = [
+        {
+            "source_layer": title,
+            "output_basename": source.stem,
+            "status": "EXPORTED",
+            "output_files": [{"name": source.name, "sha256": digest_file(source)}],
+        }
+        for title, source in zip(("第1幅", "第2幅"), sources, strict=True)
+    ]
+    manifest.write_text(json.dumps({
+        "operation": "GDB_TO_SHP_LOCAL_ONLY",
+        "destination": str(source_a.parent),
+        "source_display_name": "湖南基础地质.gdb",
+        "layers": rows,
+    }, ensure_ascii=False), encoding="utf-8")
+    for resource, source in zip(resources, sources, strict=True):
+        resource["batch_source"] = conversion_batch(
+            source, source_sha256=digest_file(source),
+        )
+        resource["artifact"]["sha256"] = digest_file(resource["artifact"]["path"])
+        resource["style"]["sha256"] = digest_file(resource["style"]["path"])
+        resource["artifact"]["source_hashes"] = [
+            {"path": str(source), "sha256": digest_file(source)},
+            {
+                "path": resource["batch_source"]["manifest_path"],
+                "sha256": resource["batch_source"]["manifest_sha256"],
+            },
+        ]
+    plan["schema_version"] = 2
+    plan["import_intent"] = prepare_imports(sources)
+    plan["plan_hash"] = fingerprint({k: v for k, v in plan.items() if k != "plan_hash"})
+    file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    assert len(load_plan(file)["resources"]) == 2
+    verify_artifacts(load_plan(file))
+
+    result = generate_catalog_draft(file, tmp_path / "draft-gdb-batch")
+    assert result["batch_count"] == 1
+    assert result["layer_count"] == 2
+    draft = read_profile(result)
+    assert len(draft["groups"]) == 2
+    parent = draft["groups"][1]
+    assert parent["parent"] == PENDING_GROUP
+    assert "湖南基础地质.gdb" in parent["title"]
+    assert [item["parent"] for item in draft["layers"]] == [parent["code"]] * 2
+    assert [item["title"] for item in draft["layers"]] == ["第1幅", "第2幅"]
+    assert [item["source_format"] for item in draft["layers"]] == ["gdb", "gdb"]
+    assert all(item["publish_kind"] == "shapefile" for item in draft["layers"])
+    assert all(item["conversion_reviewed"] is False for item in draft["layers"])
+    assert all(item["wms"]["visual_reviewed"] is False for item in draft["layers"])
+    evidence = json.loads(Path(result["report"]).read_text("utf-8"))
+    assert evidence["batch_parents"][0]["children"] == 2
+    assert evidence["registered"] is False
+    sql = build_business_tree_sql(draft, tmp_path / "blocked-batch-sql")
+    assert sql["status"] == "BLOCKED_PENDING_REVIEW"
+
+    # Conversion lineage remains part of the immutable execution-source checks.
+    manifest.write_text(manifest.read_text("utf-8") + " ", encoding="utf-8")
+    with pytest.raises(Exception) as changed:
+        verify_artifacts(load_plan(file))
+    assert getattr(changed.value, "code", None) == "SOURCE_CHANGED"

@@ -61,6 +61,7 @@ def build_plan(
     task_id: str | None = None,
 ) -> dict:
     from .arcgis_bridge import resolve_sld_directory
+    from .batch_lineage import conversion_batch
     from .datasets import GdalRuntime, package_dataset
     from .imports import prepare_imports, verify_import_intent
     from .sld_field_remap import load_reviewed_field_map, rewrite_sld_field_references
@@ -148,6 +149,16 @@ def build_plan(
         if not resource["blocking_errors"]:
             artifact = package_dataset(info, resource_dir)
             resource["artifact"] = artifact
+            source_sha = next(
+                (item["sha256"] for item in artifact["source_hashes"]
+                 if item["path"] == str(source)), None,
+            )
+            batch = conversion_batch(source, source_sha256=source_sha) if source_sha else None
+            if batch:
+                resource["batch_source"] = batch
+                artifact["source_hashes"].append({
+                    "path": batch["manifest_path"], "sha256": batch["manifest_sha256"],
+                })
             style_file = resource_dir / "style.sld"
             selected_sld = style_sources.get(source.resolve()) or sld
             if selected_sld:
@@ -275,6 +286,50 @@ def validate_plan(plan: dict) -> None:
             seen_names.add(resource["target_name"])
             if not isinstance(resource["blocking_errors"], list):
                 raise ValueError()
+            batch = resource.get("batch_source")
+            if batch is not None:
+                if plan["schema_version"] != 2 or resource["kind"] != "shapefile":
+                    raise ValueError()
+                if not isinstance(batch, dict) or set(batch) != {
+                    "format", "source_filename", "source_layer", "group_code",
+                    "manifest_path", "manifest_sha256",
+                }:
+                    raise ValueError()
+                if batch["format"] not in {"GDB", "MXD"}:
+                    raise ValueError()
+                if (
+                    not isinstance(batch["source_filename"], str)
+                    or not 1 <= len(batch["source_filename"]) <= 128
+                    or not batch["source_filename"].casefold().endswith("." + batch["format"].lower())
+                    or any(ch in batch["source_filename"] for ch in "/\\\\")
+                    or any(ord(ch) < 32 for ch in batch["source_filename"])
+                ):
+                    raise ValueError()
+                if (
+                    not isinstance(batch["source_layer"], str)
+                    or not 1 <= len(batch["source_layer"]) <= 256
+                    or any(ord(ch) < 32 for ch in batch["source_layer"])
+                    or not isinstance(batch["group_code"], str)
+                    or not re.fullmatch(r"draft_batch_[0-9a-f]{16}", batch["group_code"])
+                    or not isinstance(batch["manifest_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", batch["manifest_sha256"])
+                ):
+                    raise ValueError()
+                marker = Path(batch["manifest_path"])
+                expected = (
+                    "conversion-report.json" if batch["format"] == "GDB"
+                    else "mxd-export-manifest.json"
+                )
+                if (
+                    not marker.is_absolute() or marker.name != expected
+                    or marker.parent != Path(resource["inspection"]["source"]).parent
+                    or not any(
+                        item.get("path") == str(marker)
+                        and item.get("sha256") == batch["manifest_sha256"]
+                        for item in resource.get("artifact", {}).get("source_hashes", [])
+                    )
+                ):
+                    raise ValueError()
             if plan["ready"]:
                 if resource["blocking_errors"]:
                     raise ValueError()

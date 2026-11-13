@@ -403,7 +403,7 @@ class MainWindow(QMainWindow):
         for label, action in (
             ("添加文件", self._choose_sources),
             ("添加目录", self._choose_source_folder),
-            ("GDB / MXD / LYR 转换", self._arcgis_conversion),
+            ("整库批量导入（GDB / MXD / LYR）", self._arcgis_conversion),
             ("清空", self._clear_sources),
         ):
             button = QPushButton(label)
@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
         self.source_count = QLabel("尚未添加数据")
         row.addWidget(self.source_count)
         box.addLayout(row)
-        self.source_hint = QLabel("支持 SHP（同目录包含 DBF/SHX/PRJ）和单个 GeoTIFF。多个 TIFF 需明确勾选独立发布；Mosaic/Pyramid 暂不支持。")
+        self.source_hint = QLabel("整库 GDB/MXD 可批量转换：每个合格图层单独发布；目录初稿按原文件生成图幅集父节点。多个 TIFF 仍需明确确认独立发布。")
         self.source_hint.setObjectName("muted")
         self.source_hint.setWordWrap(True)
         box.addWidget(self.source_hint)
@@ -999,7 +999,7 @@ class MainWindow(QMainWindow):
             )
             return
         if kind == "mxd":
-            message = summary + "\n\n是否将导出的 SHP 加入发布任务？LYR 样式可继续在 QGIS 离线转换。"
+            message = summary + "\n\n这些 SHP 将作为独立图层逐个检查；发布后按原 MXD 生成图幅集父节点和各图层子节点草稿。是否整批加入？LYR 样式仍需在 QGIS 处理。"
         else:
             message = summary + "\n\n是否加入对应 SHP，并在本任务中使用刚生成的 SLD？"
         choice = QMessageBox.question(
@@ -1052,7 +1052,8 @@ class MainWindow(QMainWindow):
             "① GDB → SHP：使用受控 GDAL 在本机批量导出要素类，原始 GDB 不变，附字段映射报告。"
             "\n② MXD → SHP + LYR：在装有 ArcMap 10.x 的离线电脑运行辅助脚本；MXD 不能单独还原数据。"
             "\n③ LYR → SLD：导出 QGIS 批量离线脚本，或通过 Style Assistant 手动导出，再按 SHP 名称批量匹配。"
-            "\n\n注记层、长字段、中文字段和复杂符号都需要核对；转换成功不等于样式无损。"
+            "\n\n一个文件包含多个图幅时，会分别导出、预检和发布；业务目录按源文件分组。"
+            "注记层、长字段、中文字段和复杂符号仍需核对，单个要素类不一定代表单幅地图。"
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1274,7 +1275,8 @@ class MainWindow(QMainWindow):
         message = (
             f"本地转换完成：{converted} 个图层已生成 SHP，{skipped} 个已跳过，{failed} 个失败。\n"
             f"详细报告：{report_file}\n"
-            "数据不会自动发布；字段改名、类型差异、注记与 LYR 样式须核对。"
+            "每个成功导出的 SHP 将作为独立图层预检；目录初稿按原 GDB 分组。"
+            "字段改名、类型差异和样式须核对，跳过或失败的图层不计入发布清单。"
         )
         self.activity.setText(message)
         if not converted:
@@ -1387,6 +1389,12 @@ class MainWindow(QMainWindow):
         raster_summary = _raster_summary(plan)
         if raster_summary:
             summary += "\n" + raster_summary
+        batches = {
+            resource["batch_source"]["group_code"] for resource in resources
+            if isinstance(resource.get("batch_source"), dict)
+        }
+        if batches:
+            summary += f"\n识别到 {len(batches)} 个 GDB/MXD 图幅集；{len(resources)} 个图层将分别发布，目录按原文件分组（需人工审核）。"
         self.plan_summary.setText(summary)
         self.resources_table.setRowCount(len(resources))
         details = []
@@ -1414,6 +1422,9 @@ class MainWindow(QMainWindow):
                 item.setToolTip(str(value))
                 self.resources_table.setItem(row, column, item)
             details.append(f"{resource['target_name']}：{state}")
+            batch = resource.get("batch_source")
+            if batch:
+                details.append(f"  来源图幅集：{batch['source_filename']} / {batch['source_layer']}（目录父子关系待审核）")
             rewritten = resource.get("sld_field_rewrite")
             if isinstance(rewritten, dict):
                 changes = rewritten.get("changes", [])

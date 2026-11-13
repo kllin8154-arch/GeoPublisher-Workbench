@@ -110,3 +110,27 @@ def test_mxd_missing_matching_lyr_blocks_unreviewed_sheet(tmp_path):
     })
     with pytest.raises(ConfigError):
         conversion_batch(shp, source_sha256="a" * 64)
+
+
+def test_same_filename_in_different_conversion_jobs_never_merges_parent_nodes(tmp_path):
+    origins = []
+    for folder_name in ("job_a", "job_b"):
+        folder = tmp_path / folder_name
+        folder.mkdir()
+        shp = folder / "sheet.shp"
+        shp.write_bytes(folder_name.encode("ascii"))
+        digest = hashlib.sha256(shp.read_bytes()).hexdigest()
+        _write(folder / "conversion-report.json", {
+            "operation": "GDB_TO_SHP_LOCAL_ONLY",
+            "source_display_name": "same_name.gdb",
+            "destination": str(folder),
+            "layers": [{
+                "source_layer": "同名图幅", "output_basename": "sheet",
+                "status": "EXPORTED", "output_files": [{
+                    "name": shp.name, "sha256": digest,
+                }],
+            }],
+        })
+        origins.append(conversion_batch(shp, source_sha256=digest))
+    assert origins[0]["source_filename"] == origins[1]["source_filename"]
+    assert origins[0]["group_code"] != origins[1]["group_code"]

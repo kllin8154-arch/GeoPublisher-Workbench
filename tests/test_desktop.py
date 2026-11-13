@@ -1270,3 +1270,19 @@ def test_result_p0_prefers_unknown_write_safety_over_inconsistent_success(window
     assert window.result_title.text() == "需要人工核对"
     assert not window.result_catalog_button.isEnabled()
     assert not window.view_wms_button.isEnabled()
+
+
+def test_batch_import_review_shows_file_parent_and_individual_sheet_mapping(window):
+    plan = sample_plan(window)
+    plan["resources"][0]["kind"] = "shapefile"
+    plan["resources"][0]["batch_source"] = {
+        "format": "GDB", "source_filename": "基础地质.gdb",
+        "source_layer": "第一幅", "group_code": "draft_batch_0123456789abcdef",
+        "manifest_path": "synthetic-report", "manifest_sha256": "a" * 64,
+    }
+    window.review_plan(plan)
+    assert "1 个 GDB/MXD 图幅集" in window.plan_summary.text()
+    assert "分别发布" in window.plan_summary.text()
+    assert "基础地质.gdb / 第一幅" in window.check_details.toPlainText()
+    assert "目录父子关系待审核" in window.check_details.toPlainText()
+    assert window._plan is plan

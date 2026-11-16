@@ -52,6 +52,11 @@ class FakeConnection:
     def __init__(self, *, fail_write=False):
         self.commands = []
         self.fail_write = fail_write
+        self.nextset_calls = 0
+
+    def nextset(self):
+        self.nextset_calls += 1
+        return None
 
     def __enter__(self):
         return self
@@ -146,6 +151,7 @@ def test_authorized_registration_uses_only_generated_sql_and_audits_verified_res
     assert seen[0]["application_name"].endswith("authorized_registration")
     assert any("LOCK TABLE" in statement and "INSERT INTO" in statement
                for statement, _ in connection.commands)
+    assert connection.nextset_calls == 1
     audit = (kwargs["output"] / "catalog_registration_audit.json").read_text("utf-8")
     assert json.loads(audit)["status"] == "VERIFIED_REGISTERED"
     assert json.loads(audit)["profile_sha256"] == digest

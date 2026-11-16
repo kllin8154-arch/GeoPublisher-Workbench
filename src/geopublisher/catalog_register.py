@@ -191,7 +191,12 @@ def register_catalog(
                 try:
                     # Includes BEGIN, reviewed tables LOCK, collision guards and COMMIT.
                     # No arbitrary SQL file from a caller is ever executed.
-                    conn.execute(sql_text)
+                    cursor = conn.execute(sql_text)
+                    # psycopg returns a cursor at the first result set. Drain
+                    # all statements so a later INSERT/COMMIT failure is not
+                    # mistaken for a successful first BEGIN/LOCK response.
+                    while cursor.nextset():
+                        pass
                 except Exception as exc:
                     try:
                         conn.execute("ROLLBACK")

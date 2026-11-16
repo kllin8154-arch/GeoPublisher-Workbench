@@ -1291,9 +1291,10 @@ def test_batch_import_review_shows_file_parent_and_individual_sheet_mapping(wind
         "manifest_path": "synthetic-report", "manifest_sha256": "a" * 64,
     }
     window.review_plan(plan)
-    assert "1 个 GDB/MXD 图幅集" in window.plan_summary.text()
-    assert "分别发布" in window.plan_summary.text()
-    assert "基础地质.gdb / 第一幅" in window.check_details.toPlainText()
+    assert "1 份 GDB/MXD 来源" in window.plan_summary.text()
+    assert "图层数量，不一定是图幅数" in window.plan_summary.text()
+    assert window.sheet_review_button.isEnabled()
+    assert "原文件 / 图层：基础地质.gdb / 第一幅" in window.check_details.toPlainText()
     assert "目录父子关系待审核" in window.check_details.toPlainText()
     assert window._plan is plan
 
@@ -1308,6 +1309,8 @@ def test_desktop_simple_mode_has_three_clear_entry_points(window):
     assert "选择 MXD 地图" in names
     assert "添加 SHP / TIFF" in names
     assert "下一步：检查图幅" in names
+    assert "核对图幅关系" in names
+    assert not window.sheet_review_button.isEnabled()
     assert window.strategy.currentData() == "fail"
     window.more_tools_button.click()
     assert window.more_tools_button.isChecked()
@@ -1371,3 +1374,84 @@ def test_incomplete_mxd_import_selects_successes_without_confirmation(window, tm
     assert window.sources.count() == 1
     assert window.sources.item(0).text() == str(folder / "GOOD.shp")
     assert not window.execute_button.isEnabled()
+
+
+def test_theme_color_and_button_sizes_match_at_compact_window_width(window, app):
+    from PySide6.QtWidgets import QPushButton
+
+    assert window.minimumWidth() <= 900
+    assert window.minimumHeight() <= 640
+    window.show()
+    window.resize(900, 640)
+    app.processEvents()
+    assert window.theme_selector.currentData() == "auto"
+    assert window.more_tools_button.sizeHint().height() >= 34
+    assert window.inspect_button.sizeHint().height() >= 38
+    source_buttons = [
+        button for button in window.findChildren(QPushButton)
+        if button.objectName() == "sourceAction"
+    ]
+    assert len(source_buttons) == 3
+    assert all(button.sizeHint().height() >= 42 for button in source_buttons)
+    assert window.tools_panel.layout().rowCount() == 2
+    dark = window.theme_selector.findData("dark")
+    window.theme_selector.setCurrentIndex(dark)
+    assert "#141b1d" in window.styleSheet()
+    assert "#4c8377" in window.styleSheet()
+    assert window.theme_selector.currentData() == "dark"
+    assert window._preferences.value("theme") == "dark"
+    light = window.theme_selector.findData("light")
+    window.theme_selector.setCurrentIndex(light)
+    assert "#ffffff" in window.styleSheet()
+    assert "#315f59" in window.styleSheet()
+    assert window.theme_selector.currentData() == "light"
+    assert not window.advanced_import_options.isVisible()
+
+
+def test_sheet_review_dialog_saves_only_explicit_manual_assignments(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QComboBox, QDialog, QTableWidget
+    from test_sheet_review import source_batch_plan
+
+    from geopublisher.plans import load_plan
+    from geopublisher.sheet_review import validate_sheet_review
+
+    file = source_batch_plan(tmp_path)
+    plan = load_plan(file)
+    window.review_plan(plan)
+    assert window.sheet_review_button.isEnabled()
+
+    def confirm_review(dialog):
+        table = dialog.findChild(QTableWidget)
+        assert table is not None
+        assert table.rowCount() == 2
+        assert table.horizontalHeaderItem(3).text().startswith("图幅编号")
+        for row in range(2):
+            table.item(row, 3).setText("H49E001006")
+            table.item(row, 4).setText("合成地质图幅")
+            picker = table.cellWidget(row, 5)
+            assert isinstance(picker, QComboBox)
+            picker.setCurrentIndex(picker.findData("CONFIRMED_SINGLE"))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", confirm_review)
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: None)
+    window._open_sheet_review()
+    assert window._sheet_review_file is not None
+    data = validate_sheet_review(file, window._sheet_review_file)
+    assert data["sheet_count"] == 1
+    assert data["pending"] == data["needs_split"] == 0
+    assert "确认 1 幅" in window.activity.text()
+
+
+def test_plan_changes_clear_old_sheet_review_and_disable_related_button(window, tmp_path):
+    from test_sheet_review import source_batch_plan
+
+    from geopublisher.plans import load_plan
+
+    plan = load_plan(source_batch_plan(tmp_path))
+    window.review_plan(plan)
+    assert window.sheet_review_button.isEnabled()
+    window._sheet_review_file = tmp_path / "old-review.json"
+    window._invalidate_plan()
+    assert window._sheet_review_file is None
+    assert not window.sheet_review_button.isEnabled()

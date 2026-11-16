@@ -4,6 +4,8 @@
 
 **第一次使用？** 桌面入口已简化为「选择整个 GDB / 选择 MXD 地图 / 添加 SHP-TIFF → 检查图幅 → 确认发布」。高级参数、业务目录 SQL 和服务器部署默认收起到「更多工具」；转换完成后自动选入通过本地清单验证的 SHP，仍须确认 GeoServer 发布并人工验收 WMS。参见 [三步上手指南](docs/QUICKSTART-ZH.md)、[GDB/MXD 离线转换指南](docs/IMPORT-GDB-MXD-LYR.md)和 [离线主机/服务器部署](docs/OFFLINE-OPERATOR.md)。
 
+**P0-B：逻辑图幅归组已增加人工审核流程。** 批量 GDB/MXD 完成后在图幅检查页点击「核对图幅关系」，按真实图幅编号将多个 GeoServer 图层归并到同一图幅节点；不确定或单层跨多幅一律阻断已确认归组。桌面新增跟随系统/浅色/深色主题、较大可点击按钮及紧凑窗口滚动。详见 [图幅关系审核指南](docs/SHEET-REVIEW-P0B.md) 与 [数据库授权登记](docs/CATALOG-REGISTER-GATE.md)。
+
 **当前版本：0.1.0 开发预览。** 已在 Windows 10 和 Linux 的隔离环境中，使用 GeoServer 2.24.4、GDAL 3.13.3 与合成数据完成核心发布、重复执行、配置清理及上传响应丢失验证。Windows 原生桌面启动与字体烟测、受控 GDAL 已取得本地证据；完整 Windows/Linux 离线发行物与现场环境仍需验收，当前构建不等于可直接交付内网的离线安装包。详见 [验证汇总](docs/VALIDATION.md) 和 [Windows 本地验证报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。
 
 PR #1 的凭据隔离补丁已通过 Windows 增量验证（`332 passed, 4 skipped`）：原生 GDAL 用例实际执行，中文路径预检和桌面后台生成计划通过，GDAL 子进程不再继承默认或档案自定义的发布凭据，父进程凭据读取正常。原版 `310 passed, 4 skipped` 的证据仍单独保留，详见 [补丁验证记录](docs/VALIDATION-WINDOWS-2026-11-01.md#7-pr-1-凭据隔离补丁的-windows-增量验证)。
@@ -24,12 +26,12 @@ PR #2 的多 TIFF 导入意图与已知结构阻断已通过 Windows 原生增�
 | 服务验收 | WMS PNG 解码、尺寸、透明度和内容检查；矢量可选 WFS 抽样；无法判断的图片标记待人工核验 |
 | 任务恢复 | SQLite 持久化写意图、结果、所有权快照和锁；未知写结果不盲目重试 |
 | 配置清理 | 精确清理本任务拥有且未被外部修改的对象；保留服务器实际数据文件 |
-| 目录接入 | 导出绑定清单；人工核验字段映射后生成 PostgreSQL SQL；不连接业务数据库 |
+| 目录接入 | 导出完整父子目录审核草稿；独立只读核验目标 PostgreSQL 结构和冲突；审核批准后可通过二次确认完成事务登记与逐字段只读回查，默认不写库 |
 | 桌面界面 | 数据选择、环境设置、预检、一次任务级确认、后台执行、检查点取消、真实地图、历史及恢复；ArcMap/QGIS 本机直接转换向导 |
 
 已在隔离 GeoServer 2.24.4 上以**纯数学合成多边形**完成 GDB→SHP→短字段映射→SLD 的真实只读 WMS 颜色验证；见 [分类样式实测](docs/VALIDATION-SLD-CLASSIFICATION-2026-11-02.md)。此测试采用停机准备的专用 catalog，不代表正式 REST 发布或真实 LYR/MXD 视觉保真。另已在 ArcMap 10.8 / QGIS 4.2.1 上完成真实合成 MXD→SHP/LYR→QML/SLD 离线转换及中文路径检查；详见 [本机验收](docs/VALIDATION-ARCMAP-QGIS-2026-11-02.md)。当前不能在工作台内直接解析 MXD/LYR 二进制文件，真实 ArcMap/QGIS 样式转换须在具备软件及授权的离线环境完成。尚不支持 ImageMosaic/ImagePyramid、数据原位更新、自动写业务库、完整几何质检、大文件分片续传。完整范围见 [v0.2 开发基线](docs/PRD-v0.2.md) 和 [开发路线](docs/ROADMAP.md)。
 
-桌面端现已提供**直接转换 MXD / LYR**：选择来源、核对本地 ArcMap/QGIS Python、后台处理并检查结果；转换成功后由用户决定是否将 SHP/SLD 加入发布计划。此过程不涉及生产服务器或数据上传，ArcMap/QGIS/SLYR 等仍须用户在本机合法安装；见 [直接转换说明](docs/DESKTOP.md#在桌面界面直接转换-mxd--lyr无需手动运行命令) 与 [本机验收](docs/VALIDATION-DIRECT-MXD-LYR-2026-11-02.md)。
+桌面端现已提供**直接转换 MXD / LYR**：选择来源、核对本地 ArcMap/QGIS Python、后台处理并检查结果；MXD 完成后符合报告校验的 SHP 自动加入本地待检列表，LYR 会关联本地转换的 SLD；发布到 GeoServer 仍要明确确认。此过程不涉及生产服务器或数据上传，ArcMap/QGIS/SLYR 等仍须用户在本机合法安装；见 [直接转换说明](docs/DESKTOP.md#在桌面界面直接转换-mxd--lyr无需手动运行命令) 与 [本机验收](docs/VALIDATION-DIRECT-MXD-LYR-2026-11-02.md)。
 
 ## Windows 开发环境
 

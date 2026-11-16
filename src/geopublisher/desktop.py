@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -56,6 +57,75 @@ _KIND_LABELS = {
     "shapefile": "矢量 SHP",
     "geotiff": "栅格 TIFF",
 }
+
+
+def desktop_theme_stylesheet(*, dark: bool = False) -> str:
+    """One restrained theme for every button, field, table and dialog."""
+    c = ({
+        "text": "#e6eeeb", "subtle": "#a6b9b3", "page": "#141b1d",
+        "sidebar": "#1c2829", "line": "#3c4f50", "hover": "#263638",
+        "selected": "#284840", "selected_text": "#d1eee2",
+        "accent": "#4c8377", "accent_hover": "#609b8d",
+        "muted_bg": "#233033", "disabled": "#758987",
+        "control": "#1b2729", "alternating": "#202d2f",
+        "contrast": "#ffffff", "primary_disabled": "#304b48",
+    } if dark else {
+        "text": "#222936", "subtle": "#66717e", "page": "#ffffff",
+        "sidebar": "#f6f7f8", "line": "#d8dde3", "hover": "#f0f3f5",
+        "selected": "#e5efec", "selected_text": "#274e4b",
+        "accent": "#315f59", "accent_hover": "#264c47",
+        "muted_bg": "#f3f4f6", "disabled": "#8b949e",
+        "control": "#ffffff", "alternating": "#fafbfb",
+        "contrast": "#ffffff", "primary_disabled": "#c9d7d2",
+    })
+    return f"""
+        QWidget {{ font-family: "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+                   font-size: 13px; color: {c['text']}; background: {c['page']}; }}
+        QFrame#sidebar {{ background: {c['sidebar']}; border-right: 1px solid {c['line']}; }}
+        QFrame#sidebar QLabel {{ background: transparent; }}
+        QLabel#brand {{ font-size: 19px; font-weight: 700; }}
+        QLabel#title {{ font-size: 24px; font-weight: 650; }}
+        QLabel#muted {{ color: {c['subtle']}; }}
+        QLabel#step {{ font-size: 16px; font-weight: 600; padding: 6px 0; }}
+        QPushButton {{ min-height: 26px; border: 1px solid {c['line']};
+                       border-radius: 7px; padding: 6px 11px; background: {c['control']};
+                       color: {c['text']}; }}
+        QPushButton:hover {{ background: {c['hover']}; }}
+        QPushButton:pressed {{ background: {c['selected']}; }}
+        QPushButton:focus {{ border: 2px solid {c['accent']}; }}
+        QPushButton:checked {{ background: {c['selected']};
+                               color: {c['selected_text']}; border-color: {c['accent']}; }}
+        QPushButton#sourceAction {{ min-height: 34px; font-weight: 600;
+                                    background: {c['selected']}; border-color: {c['line']}; }}
+        QPushButton#sourceAction:hover {{ border-color: {c['accent']}; }}
+        QPushButton#primary {{ min-height: 32px; min-width: 138px; font-weight: 600;
+                               background: {c['accent']}; color: {c['contrast']};
+                               border-color: {c['accent']}; }}
+        QPushButton#primary:hover {{ background: {c['accent_hover']}; }}
+        QPushButton:disabled {{ color: {c['disabled']};
+                               background: {c['muted_bg']}; border-color: {c['line']}; }}
+        QPushButton#primary:disabled {{ color: {c['disabled']};
+                                       background: {c['primary_disabled']}; border-color: {c['line']}; }}
+        QLineEdit, QComboBox, QSpinBox {{ padding: 7px; min-height: 24px;
+                                         border: 1px solid {c['line']}; border-radius: 6px;
+                                         background: {c['control']}; color: {c['text']}; }}
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border: 1px solid {c['accent']}; }}
+        QComboBox QAbstractItemView {{ background: {c['control']}; color: {c['text']};
+                                      selection-background-color: {c['selected']}; }}
+        QListWidget, QPlainTextEdit, QTableWidget {{ border: 1px solid {c['line']};
+                    border-radius: 6px; background: {c['control']}; color: {c['text']};
+                    alternate-background-color: {c['alternating']}; }}
+        QTableWidget::item:selected, QListWidget::item:selected {{
+                    background: {c['selected']}; color: {c['selected_text']}; }}
+        QHeaderView::section {{ padding: 8px; background: {c['sidebar']};
+                    color: {c['text']}; border: none; border-bottom: 1px solid {c['line']}; }}
+        QProgressBar {{ border: none; background: {c['muted_bg']};
+                        border-radius: 3px; height: 5px; }}
+        QProgressBar::chunk {{ background: {c['accent']}; }}
+        QLabel#wmsPreview {{ border: 1px solid {c['line']};
+                             border-radius: 6px; color: {c['subtle']}; }}
+        QToolTip {{ background: {c['control']}; color: {c['text']}; border: 1px solid {c['line']}; }}
+    """
 
 
 def gdb_preview_summary(info: dict, *, include_annotations: bool = False) -> str:
@@ -232,8 +302,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("GeoPublisher · GeoServer 发布工作台")
         self.resize(1160, 830)
-        self.setMinimumSize(980, 720)
+        self.setMinimumSize(860, 600)
         self._work_dir = Path(work_dir) if work_dir is not None else default_work_dir()
+        self._preferences = QSettings(
+            str(self._work_dir / "ui-preferences.ini"), QSettings.Format.IniFormat
+        )
+        stored_theme = str(self._preferences.value("theme", "auto"))
+        self._theme_mode = stored_theme if stored_theme in {"auto", "light", "dark"} else "auto"
         self._plan: dict | None = None
         self._thread: QThread | None = None
         self._worker: _Worker | None = None
@@ -249,11 +324,15 @@ class MainWindow(QMainWindow):
         self._preview_paths: list[Path] = []
         self._preview_pixmap: QPixmap | None = None
         self._report_path: Path | None = None
+        self._sheet_review_file: Path | None = None
         self._result_catalog_allowed = False
         self._result_map_allowed = False
         self._editable: list[QWidget] = []
         self._build_ui()
         self._building_forms = False
+        self._apply_theme()
+        hints = QApplication.instance().styleHints()
+        hints.colorSchemeChanged.connect(lambda _scheme: self._apply_theme())
         self._refresh_history()
 
     def _build_ui(self) -> None:
@@ -289,26 +368,31 @@ class MainWindow(QMainWindow):
         layout.addWidget(sidebar)
         layout.addWidget(self.pages, 1)
         self.setCentralWidget(root)
-        self.setStyleSheet("""
-            QWidget { font-family: "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; font-size: 13px; color: #222936; background: #ffffff; }
-            QFrame#sidebar { background: #f6f7f8; border-right: 1px solid #e5e7eb; }
-            QFrame#sidebar QLabel { background: transparent; }
-            QLabel#brand { font-size: 19px; font-weight: 700; }
-            QLabel#title { font-size: 25px; font-weight: 650; }
-            QLabel#muted { color: #6b7280; line-height: 1.5; }
-            QLabel#step { font-size: 16px; font-weight: 600; padding: 8px 0; }
-            QPushButton { border: 1px solid #d8dde3; border-radius: 6px; padding: 8px 14px; background: #ffffff; }
-            QPushButton:hover { background: #f0f3f5; }
-            QPushButton:checked { background: #e9eef0; color: #274e4b; border-color: #bccfcb; }
-            QPushButton#primary { background: #315f59; color: #ffffff; border-color: #315f59; }
-            QPushButton#primary:hover { background: #264c47; }
-            QPushButton:disabled { color: #9ca3af; background: #f3f4f6; border-color: #e5e7eb; }
-            QLineEdit, QComboBox, QSpinBox { padding: 7px; border: 1px solid #d8dde3; border-radius: 5px; min-height: 21px; }
-            QListWidget, QPlainTextEdit, QTableWidget { border: 1px solid #e1e5e9; border-radius: 5px; background: #ffffff; }
-            QHeaderView::section { padding: 8px; background: #ffffff; border: none; border-bottom: 1px solid #e1e5e9; }
-            QProgressBar { border: none; background: #edf1f0; border-radius: 3px; height: 5px; }
-            QProgressBar::chunk { background: #557b73; }
-        """)
+        # System/explicit theme is applied after all widgets exist in __init__.
+
+    def _apply_theme(self) -> None:
+        hints = QApplication.instance().styleHints()
+        dark = (
+            self._theme_mode == "dark"
+            or (self._theme_mode == "auto" and hints.colorScheme() == Qt.ColorScheme.Dark)
+        )
+        self.setStyleSheet(desktop_theme_stylesheet(dark=dark))
+        # The WMS placeholder must inherit the same theme as other preview areas.
+        self.preview.setStyleSheet("")
+
+    def _change_theme(self) -> None:
+        choice = self.theme_selector.currentData()
+        if choice not in {"auto", "light", "dark"}:
+            return
+        self._theme_mode = choice
+        self._apply_theme()
+        try:
+            Path(self._preferences.fileName()).parent.mkdir(parents=True, exist_ok=True)
+            self._preferences.setValue("theme", choice)
+            self._preferences.sync()
+        except OSError:
+            # Read-only offline deployment: switching still works for this session.
+            pass
 
     def _build_tasks_page(self) -> QWidget:
         page = QWidget()
@@ -345,14 +429,15 @@ class MainWindow(QMainWindow):
         self._editable.append(self.more_tools_button)
         box.addLayout(toolbar)
         self.tools_panel = QWidget()
-        tools_row = QHBoxLayout(self.tools_panel)
-        tools_row.setContentsMargins(0, 0, 0, 0)
-        for widget in (
+        tools_grid = QGridLayout(self.tools_panel)
+        tools_grid.setContentsMargins(0, 0, 0, 0)
+        tools_grid.setHorizontalSpacing(8)
+        tools_grid.setVerticalSpacing(8)
+        for index, widget in enumerate((
             self.history_button, self.business_tree_button, self.server_deploy_button,
-            self.server_cancel_button, self.help_button, self.folder_button,
-        ):
-            tools_row.addWidget(widget)
-        tools_row.addStretch()
+            self.help_button, self.folder_button, self.server_cancel_button,
+        )):
+            tools_grid.addWidget(widget, index // 3, index % 3)
         self.tools_panel.hide()
         self.more_tools_button.toggled.connect(self.tools_panel.setVisible)
         box.addWidget(self.tools_panel)
@@ -373,7 +458,11 @@ class MainWindow(QMainWindow):
         self.step_label.setObjectName("step")
         box.addWidget(self.step_label)
         self.steps = QStackedWidget()
-        self.steps.addWidget(self._build_import())
+        import_scroll = QScrollArea()
+        import_scroll.setWidgetResizable(True)
+        import_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        import_scroll.setWidget(self._build_import())
+        self.steps.addWidget(import_scroll)
         self.steps.addWidget(self._build_review())
         self.steps.addWidget(self._build_result())
         box.addWidget(self.steps, 1)
@@ -413,6 +502,7 @@ class MainWindow(QMainWindow):
             ("添加 SHP / TIFF", self._choose_sources),
         ):
             button = QPushButton(label)
+            button.setObjectName("sourceAction")
             button.clicked.connect(action)
             quick_row.addWidget(button)
             self._editable.append(button)
@@ -572,6 +662,13 @@ class MainWindow(QMainWindow):
         self.execute_button.setEnabled(False)
         self.execute_button.clicked.connect(self._confirm_run)
         row.addWidget(self.back_button)
+        self.sheet_review_button = QPushButton("核对图幅关系")
+        self.sheet_review_button.setToolTip(
+            "一个图层不等于一张地质图幅；请核对编号。同一图幅可包含多个图层，单层多幅需先拆分。"
+        )
+        self.sheet_review_button.setEnabled(False)
+        self.sheet_review_button.clicked.connect(self._open_sheet_review)
+        row.addWidget(self.sheet_review_button)
         row.addStretch()
         row.addWidget(self.execute_button)
         self._editable.append(self.back_button)
@@ -607,7 +704,7 @@ class MainWindow(QMainWindow):
         self.preview = QLabel("发布后在这里显示 GeoServer 实际返回的 WMS 地图。")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(240)
-        self.preview.setStyleSheet("border: 1px solid #e1e5e9; border-radius: 6px; color: #6b7280;")
+        self.preview.setObjectName("wmsPreview")
         self.preview.setWordWrap(True)
         splitter.addWidget(self.preview)
         self.run_log = QPlainTextEdit()
@@ -628,6 +725,7 @@ class MainWindow(QMainWindow):
         self.detail_button.toggled.connect(self.run_log.setVisible)
         controls.addWidget(self.cancel_button)
         controls.addWidget(self.detail_button)
+        controls.addWidget(self.report_button)
         controls.addStretch()
         self.view_wms_button = QPushButton("打开 WMS 验收图")
         self.view_wms_button.setEnabled(False)
@@ -639,10 +737,12 @@ class MainWindow(QMainWindow):
             lambda: self._export_business_tree(Path(self._plan["output_dir"]) / "plan.json")
             if self._plan else None
         )
-        controls.addWidget(self.view_wms_button)
-        controls.addWidget(self.result_catalog_button)
-        controls.addWidget(self.report_button)
         box.addLayout(controls)
+        next_actions = QHBoxLayout()
+        next_actions.addStretch()
+        next_actions.addWidget(self.view_wms_button)
+        next_actions.addWidget(self.result_catalog_button)
+        box.addLayout(next_actions)
         return page
 
     def _build_settings_page(self) -> QWidget:
@@ -656,6 +756,17 @@ class MainWindow(QMainWindow):
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         outer.addWidget(hint)
+        appearance = QHBoxLayout()
+        appearance.addWidget(QLabel("界面主题"))
+        self.theme_selector = QComboBox()
+        self.theme_selector.addItem("跟随系统", "auto")
+        self.theme_selector.addItem("浅色", "light")
+        self.theme_selector.addItem("深色", "dark")
+        self.theme_selector.setCurrentIndex(self.theme_selector.findData(self._theme_mode))
+        self.theme_selector.currentIndexChanged.connect(self._change_theme)
+        appearance.addWidget(self.theme_selector)
+        appearance.addStretch()
+        outer.addLayout(appearance)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -880,7 +991,9 @@ class MainWindow(QMainWindow):
         if self._building_forms:
             return
         self._plan = None
+        self._sheet_review_file = None
         self.execute_button.setEnabled(False)
+        self.sheet_review_button.setEnabled(False)
         self.folder_button.setEnabled(False)
         self.activity.setText("输入已改变，请重新检查并生成计划。")
 
@@ -1407,6 +1520,11 @@ class MainWindow(QMainWindow):
 
     def review_plan(self, plan: dict) -> None:
         self._plan = plan
+        self._sheet_review_file = None
+        self.sheet_review_button.setEnabled(any(
+            isinstance(resource.get("batch_source"), dict)
+            for resource in plan.get("resources", [])
+        ))
         self._result_catalog_allowed = False
         self._result_map_allowed = False
         self.view_wms_button.setEnabled(False)
@@ -1427,7 +1545,10 @@ class MainWindow(QMainWindow):
             if isinstance(resource.get("batch_source"), dict)
         }
         if batches:
-            summary += f"\n识别到 {len(batches)} 个 GDB/MXD 图幅集；{len(resources)} 个图层将分别发布，目录按原文件分组（需人工审核）。"
+            summary += (
+                f"\n检测到 {len(batches)} 份 GDB/MXD 来源；{len(resources)} 项是图层数量，不一定是图幅数。"
+                "请点「核对图幅关系」，确认编号归组；单层多幅须先拆分。"
+            )
         self.plan_summary.setText(summary)
         self.resources_table.setRowCount(len(resources))
         details = []
@@ -1457,7 +1578,7 @@ class MainWindow(QMainWindow):
             details.append(f"{resource['target_name']}：{state}")
             batch = resource.get("batch_source")
             if batch:
-                details.append(f"  来源图幅集：{batch['source_filename']} / {batch['source_layer']}（目录父子关系待审核）")
+                details.append(f"  原文件 / 图层：{batch['source_filename']} / {batch['source_layer']}（目录父子关系待审核）")
             rewritten = resource.get("sld_field_rewrite")
             if isinstance(rewritten, dict):
                 changes = rewritten.get("changes", [])
@@ -1827,6 +1948,8 @@ class MainWindow(QMainWindow):
 
     def _new_task(self) -> None:
         self._plan = None
+        self._sheet_review_file = None
+        self.sheet_review_button.setEnabled(False)
         self._clear_sources()
         self._set_step(0)
         self.execute_button.setEnabled(False)
@@ -2285,6 +2408,176 @@ class MainWindow(QMainWindow):
                else "\n\n仅在明确确认后允许写库；请以只读核验及真实 WMS 为准。"),
         )
 
+    def _open_sheet_review(self) -> None:
+        """Edit map-sheet *claims* locally; do not infer sheet IDs from layer names."""
+        if not self._plan or self._thread is not None:
+            return
+        from .sheet_review import (
+            sheet_review_template,
+            validate_sheet_review,
+            write_sheet_review,
+        )
+
+        plan_file = Path(self._plan["output_dir"]) / "plan.json"
+        try:
+            expected = sheet_review_template(plan_file)
+            rows = expected["entries"]
+            if self._sheet_review_file:
+                current = validate_sheet_review(
+                    plan_file, self._sheet_review_file, require_complete=False
+                )
+                rows = current["entries"]
+        except (ConfigError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "图幅关系读取失败", str(exc))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("按真实图幅编号归组 · 本地审核")
+        dialog.resize(1040, 580)
+        dialog.setMinimumSize(760, 430)
+        layout = QVBoxLayout(dialog)
+        note = QLabel(
+            "一个 SHP 是一个 GeoServer 图层，不一定是一张图幅。"
+            "同一来源、同一真实图幅的多个图层请填写相同的编号和名称。"
+            "若一个图层含多张图幅，请标为「需拆分」，后续不得直接入库。"
+            "\n候选字段仅供检查，系统不会自动把字段名/图层名当作已确认图幅。"
+        )
+        note.setWordWrap(True)
+        note.setObjectName("muted")
+        layout.addWidget(note)
+        table = QTableWidget(len(rows), 6, dialog)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setHorizontalHeaderLabels(
+            ["来源文件", "原始图层", "候选字段", "图幅编号（人工填写）", "图幅名称", "确认状态"]
+        )
+        table.verticalHeader().hide()
+        table.setAlternatingRowColors(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for col, width in enumerate((140, 145, 105, 170, 170, 190)):
+            table.setColumnWidth(col, width)
+        for i, entry in enumerate(rows):
+            for j, value in enumerate((
+                entry["source_filename"], entry["source_layer"],
+                "、".join(entry["suggested_fields"]) or "未发现",
+            )):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                table.setItem(i, j, item)
+            table.setItem(i, 3, QTableWidgetItem(entry["sheet_code"]))
+            table.setItem(i, 4, QTableWidgetItem(entry["sheet_title"]))
+            status = QComboBox(table)
+            status.addItem("待核对", "PENDING")
+            status.addItem("已核对：该图层属于一张图幅", "CONFIRMED_SINGLE")
+            status.addItem("需拆分：该图层跨多张图幅", "NEEDS_SPLIT")
+            status.setCurrentIndex(max(0, status.findData(entry["status"])))
+            table.setCellWidget(i, 5, status)
+        search = QLineEdit(dialog)
+        search.setPlaceholderText("搜索来源文件、原始图层或候选字段")
+        def filter_rows(query: str) -> None:
+            query = query.strip().casefold()
+            for i in range(table.rowCount()):
+                searchable = " ".join(
+                    table.item(i, j).text() for j in (0, 1, 2)
+                ).casefold()
+                table.setRowHidden(i, bool(query) and query not in searchable)
+        search.textChanged.connect(filter_rows)
+        layout.addWidget(search)
+        layout.addWidget(table, 1)
+
+        def fill_selected_sheet() -> None:
+            chosen = sorted({item.row() for item in table.selectedIndexes()})
+            if not chosen:
+                QMessageBox.information(dialog, "先选择图层", "请按 Ctrl 或 Shift 选择同一图幅的多个图层。")
+                return
+            groups = {rows[index]["group_code"] for index in chosen}
+            if len(groups) != 1:
+                QMessageBox.warning(dialog, "跨文件归组已阻止", "不同来源 GDB/MXD 不能被合并为同一图幅。")
+                return
+            code, ok = QInputDialog.getText(dialog, "批量图幅编号", "输入实际核对的图幅编号：")
+            if not ok or not code.strip():
+                return
+            title, ok = QInputDialog.getText(dialog, "图幅名称", "输入该图幅的真实名称：")
+            if not ok or not title.strip():
+                return
+            for index in chosen:
+                table.item(index, 3).setText(code.strip())
+                table.item(index, 4).setText(title.strip())
+                selector = table.cellWidget(index, 5)
+                selector.setCurrentIndex(selector.findData("CONFIRMED_SINGLE"))
+
+        def load_existing() -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, "选择本次计划对应的图幅关系审核文件", str(self._work_dir),
+                "图幅审核 JSON (*.json)",
+            )
+            if not path:
+                return
+            try:
+                loaded = validate_sheet_review(plan_file, path, require_complete=False)
+            except (ConfigError, ValueError, OSError) as exc:
+                QMessageBox.warning(dialog, "不能载入图幅清单", str(exc))
+                return
+            for i, row in enumerate(loaded["entries"]):
+                table.item(i, 3).setText(row["sheet_code"])
+                table.item(i, 4).setText(row["sheet_title"])
+                status = table.cellWidget(i, 5)
+                status.setCurrentIndex(status.findData(row["status"]))
+            self._sheet_review_file = Path(path)
+
+        footer = QHBoxLayout()
+        assign_button = QPushButton("将选中图层归入同一图幅")
+        assign_button.clicked.connect(fill_selected_sheet)
+        footer.addWidget(assign_button)
+        load_button = QPushButton("载入之前的审核清单")
+        load_button.clicked.connect(load_existing)
+        footer.addWidget(load_button)
+        footer.addStretch()
+        actions = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        actions.button(QDialogButtonBox.StandardButton.Save).setText("保存本地图幅关系")
+        actions.button(QDialogButtonBox.StandardButton.Save).setObjectName("primary")
+        actions.rejected.connect(dialog.reject)
+        actions.accepted.connect(dialog.accept)
+        footer.addWidget(actions)
+        layout.addLayout(footer)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        updated = [dict(row) for row in rows]
+        for i, row in enumerate(updated):
+            state = table.cellWidget(i, 5).currentData()
+            code = table.item(i, 3).text().strip()
+            title = table.item(i, 4).text().strip()
+            if state != "CONFIRMED_SINGLE":
+                code = title = ""
+            row.update(status=state, sheet_code=code, sheet_title=title)
+        try:
+            self._work_dir.mkdir(parents=True, exist_ok=True)
+            output = self._work_dir / (
+                "sheet-review-" + datetime.now().strftime("%Y%m%d-")
+                + uuid.uuid4().hex[:10] + ".json"
+            )
+            result = write_sheet_review(plan_file, output, entries=updated)
+        except (ConfigError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "图幅关系不能保存", str(exc))
+            return
+        self._sheet_review_file = Path(result["file"])
+        remaining = result["pending"] + result["needs_split"]
+        self.activity.setText(
+            f"图幅关系已保存本机：确认 {result['sheet_count']} 幅；"
+            f"待核对 {result['pending']} 层、需要拆分 {result['needs_split']} 层。"
+            + ("所有图层已核对，可在地图验收后生成分组目录草稿。"
+               if not remaining else "待核对/需拆分项不能生成已确认图幅目录。")
+        )
+        QMessageBox.information(
+            self, "图幅审核清单已保存",
+            f"本地文件：{result['file']}\n已确认图幅 {result['sheet_count']} 幅，"
+            f"待核对 {result['pending']} 层，需拆分 {result['needs_split']} 层。\n"
+            "这只是人工关系审核，不是空间范围或 WMS 样式验收，也不会写入数据库。",
+        )
+
     def _export_business_tree(self, source: Path | str | None = None) -> None:
         """Reuse the existing local draft/SQL flow, never write to DB."""
         if self._thread is not None:
@@ -2311,18 +2604,29 @@ class MainWindow(QMainWindow):
 
             draft_dir = Path(root) / ("catalog-draft-" + datetime.now().strftime("%Y%m%d-") + uuid.uuid4().hex[:8])
             try:
-                draft = generate_catalog_draft(source, draft_dir)
+                active_review = (
+                    self._sheet_review_file
+                    if self._plan and
+                    Path(source).absolute() == Path(self._plan["output_dir"]) / "plan.json"
+                    else None
+                )
+                draft = generate_catalog_draft(
+                    source, draft_dir, sheet_review_file=active_review,
+                )
             except (CatalogError, ConfigError, ValueError, OSError) as exc:
                 QMessageBox.warning(self, "无法从任务整理目录", str(exc))
                 return
-            self.activity.setText("目录初稿已生成，默认全部未分类；请人工选择专题、比例尺与现有父节点。")
+            self.activity.setText(
+                f"已生成 {draft['layer_count']} 个图层、{draft['sheet_count']} 个已审核逻辑图幅的目录草稿；"
+                "仍须核验专题、比例尺、WMS 与实际数据库表。"
+            )
             if from_result:
                 self.result_flow.setText(self.result_flow.text().replace(
                     "可生成未分类初稿", "已生成未分类初稿（待分类）"
                 ))
             QMessageBox.information(
                 self, "图幅目录初稿已生成",
-                f"已整理 {draft['layer_count']} 个图层。\n\n"
+                f"已整理 {draft['layer_count']} 个图层、{draft['sheet_count']} 个审核归组图幅。\n\n"
                 f"本地文件：{draft['draft']}\n\n"
                 "初稿不会连接数据库或 GeoServer，所有图层仍处于未分类、未验收状态。"
                 "请根据真实业务目录、转换报告和 WMS 实图填写后，再生成 SQL。",
@@ -2367,7 +2671,7 @@ class MainWindow(QMainWindow):
             "GeoPublisher 使用帮助",
             "首次使用（建议先完成环境设置）：\n"
             "1. 填写 GeoServer 地址、工作空间和本次账号密码，点「测试连接（只读）」。\n"
-            "2. 返回发布任务，拖入 SHP 或 TIFF；保持默认设置，点「下一步：检查数据」。\n"
+            "2. 选择整个 GDB / MXD 或添加 SHP、TIFF，点「下一步：检查图幅」。\n"
             "3. 确认图层、坐标系和提示，点「确认并发布」。完成后查看地图预览。\n\n"
             "遇到复杂样式、编码或缺失坐标系，再展开高级选项。\n"
             "多个 TIFF 必须明确按独立图层发布；Mosaic/Pyramid 拼接暂不支持。\n"

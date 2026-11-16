@@ -75,6 +75,10 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("plan", type=Path, help="已生成并有计划哈希的任务 plan.json")
     draft.add_argument("--template", type=Path, help="可选：仅复用已知的目标表/字段模板，不复用旧图层")
     draft.add_argument("--output", type=Path, required=True, help="全新本机目录，不得位于原任务目录内")
+    draft.add_argument("--sheet-review", type=Path, help="人工核对且绑定当前 plan SHA256 的逻辑图幅归组 JSON")
+    sheets = sub.add_parser("sheet-review", help="纯离线生成图幅关系待审核清单（不能据此自动认定图幅）")
+    sheets.add_argument("plan", type=Path, help="GDB/MXD 批量转换后生成的 plan.json")
+    sheets.add_argument("--output", type=Path, required=True, help="全新本机 JSON 文件，审核后可供 catalog-draft 使用")
     for verb, help_text in (
         ("server-doctor", "通过已验证主机密钥的 SSH 或 Linux 本机方式，只读检查发布服务器"),
         ("server-stage", "SFTP/本地复制 tar 到 Linux 发布目录并校验 SHA256；不发布 GeoServer"),
@@ -453,10 +457,18 @@ def main(argv=None) -> int:
                     else journal.list_tasks()
                 )
             return 0
+        if args.command == "sheet-review":
+            from .sheet_review import write_sheet_review
+
+            _print(write_sheet_review(args.plan, args.output))
+            return 0
         if args.command == "catalog-draft":
             from .catalog_draft import generate_catalog_draft
 
-            _print(generate_catalog_draft(args.plan, args.output, template_file=args.template))
+            _print(generate_catalog_draft(
+                args.plan, args.output, template_file=args.template,
+                sheet_review_file=args.sheet_review,
+            ))
             return 0
         if args.command == "catalog-tree":
             from .business_tree import build_business_tree_sql

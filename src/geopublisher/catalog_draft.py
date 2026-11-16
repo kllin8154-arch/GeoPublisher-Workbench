@@ -118,6 +118,7 @@ def generate_catalog_draft(
     *,
     template_file: Path | str | None = None,
     report_file: Path | str | None = None,
+    sheet_review_file: Path | str | None = None,
 ) -> dict:
     """Create a local editable tree profile and review report, but never SQL writes."""
     if str(plan_file).startswith(("\\\\", "//")):
@@ -134,6 +135,15 @@ def generate_catalog_draft(
         _missing("plan.json 不在其声明的任务目录中。")
     if len(plan["resources"]) > 1000:
         _missing("一次最多生成 1000 个待分类图层。")
+    from .sheet_review import sheet_group_code, validate_sheet_review
+
+    sheet_review = (
+        validate_sheet_review(plan_path, sheet_review_file)
+        if sheet_review_file is not None else None
+    )
+    sheets_by_resource = {
+        row["resource_id"]: row for row in sheet_review["entries"]
+    } if sheet_review else {}
     workspace = plan["environment"]["workspace"]
     if not isinstance(workspace, str) or not workspace.isascii() or not workspace.replace("_", "").isalnum():
         _missing("工作空间名称不能安全写入相对 WMS 模板路径。")
@@ -182,6 +192,7 @@ def generate_catalog_draft(
     ]
     review: list[dict[str, Any]] = []
     batch_groups: dict[str, dict] = {}
+    sheet_groups: dict[str, dict] = {}
     seen: set[str] = set()
     for i, resource in enumerate(plan["resources"], start=1):
         code = resource["target_name"]
@@ -212,6 +223,22 @@ def generate_catalog_draft(
                 batch_groups[parent] = group
             elif batch_groups[parent]["title"] != f"图幅集：{batch['source_filename']}（待核对）":
                 _missing("同一图幅集标识对应多个不同来源，无法自动分组。")
+            sheet = sheets_by_resource.get(resource["resource_id"])
+            if sheet:
+                sheet_parent = sheet_group_code(parent, sheet["sheet_code"])
+                sheet_title = f"图幅：{sheet['sheet_title']}（待业务审核）"
+                if sheet_parent not in sheet_groups:
+                    if len(batch_groups) + len(sheet_groups) >= 199:
+                        _missing("图幅及源文件父节点数量超过本次审核上限，请拆分任务。")
+                    sheet_groups[sheet_parent] = {
+                        "code": sheet_parent, "title": sheet_title,
+                        "parent": parent, "display_order": i * 10,
+                        "layer_index": 0, "classification_reviewed": False,
+                    }
+                    template["groups"].append(sheet_groups[sheet_parent])
+                elif sheet_groups[sheet_parent]["title"] != sheet_title:
+                    _missing("同一来源的相同图幅编号被赋予不同名称，已阻断。")
+                parent = sheet_parent
         template["layers"].append({
             "code": code, "title": (
                 batch["source_layer"] if batch and len(batch["source_layer"]) <= 160
@@ -236,7 +263,12 @@ def generate_catalog_draft(
             "preview_prefilled": preview is not None,
             "source_batch": (
                 {"file": batch["source_filename"], "layer": batch["source_layer"],
-                 "parent": parent, "format": batch["format"]}
+                 "parent": batch["group_code"], "format": batch["format"],
+                 "reviewed_sheet": (
+                     {"code": sheets_by_resource[resource["resource_id"]]["sheet_code"],
+                      "title": sheets_by_resource[resource["resource_id"]]["sheet_title"]}
+                     if resource["resource_id"] in sheets_by_resource else None
+                 )}
                 if batch else None
             ),
             "required_manual_reviews": [
@@ -268,15 +300,21 @@ def generate_catalog_draft(
         "matching_report": report_status,
         "layer_count": len(review),
         "batch_count": len(batch_groups),
+        "sheet_count": len(sheet_groups),
+        "sheet_review_sha256": sheet_review["sha256"] if sheet_review else None,
         "batch_parents": [
             {"code": group["code"], "title": group["title"], "children": sum(
-                layer["parent"] == group["code"] for layer in template["layers"]
+                layer["parent"] == group["code"] or (
+                    layer["parent"] in sheet_groups
+                    and sheet_groups[layer["parent"]]["parent"] == group["code"]
+                ) for layer in template["layers"]
             )} for group in batch_groups.values()
         ],
         "layers": review,
         "notes": [
             "自动提取的是发布计划中的 SHP/GeoTIFF 图层，不代表已从服务器确认发布成功。",
-            "已核对匹配本地转换报告的 GDB/MXD 图幅会按源文件生成临时父节点；无来源证明的 SHP 保留在待分类根节点。",
+            "GDB/MXD 原文件只作为来源父节点；没有人工审核清单时，其 SHP 子节点仅代表图层，不代表真实图幅。",
+            "明确核对的图幅编号才生成独立图幅分组，同一图幅下允许多个 GeoServer 图层；图层跨多图幅必须先拆分，不得冒充独立图幅。",
             "一个 GDB 要素类或 MXD 图层不一定等于一个真实图幅；如同层包含多个图幅，必须先按明确图幅字段拆分并检查。",
             "原图层名称过长无法直接写入业务表时，目录显示名暂用安全编码，完整原名称在 draft_review.json 供人工修订。",
             "需将图层移至正确专题及比例尺父目录，删除 draft_unclassified，并核实字段与 WMS。",
@@ -289,4 +327,5 @@ def generate_catalog_draft(
     return {"status": overview["status"], "registered": False,
             "output": str(output_path), "draft": str(file),
             "layer_count": len(review), "batch_count": len(batch_groups),
-            "report": str(output_path / "draft_review.json")}
+            "report": str(output_path / "draft_review.json"),
+            "sheet_count": len(sheet_groups)}

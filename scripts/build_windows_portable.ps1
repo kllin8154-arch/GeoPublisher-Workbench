@@ -129,7 +129,32 @@ $manifest = [ordered]@{
     third_party_count = $packages.Count
 }
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $application 'build-manifest.json') -Encoding UTF8
-Move-Item -LiteralPath $application -Destination $final
+# Antivirus/indexers can briefly lock PyInstaller's directory after COLLECT.
+# Prefer the fast atomic directory move; on an access-denied move, copy the
+# same verified stage to a NEW destination without disabling security software.
+try {
+    Move-Item -LiteralPath $application -Destination $final -ErrorAction Stop
+} catch {
+    if ((Test-Path -LiteralPath $final) -or -not (Test-Path -LiteralPath $application)) {
+        throw 'Portable move left a partial/unknown destination; manual review required.'
+    }
+    New-Item -ItemType Directory -Path $final -ErrorAction Stop | Out-Null
+    & robocopy.exe $application $final /E /R:1 /W:1 /NP /NFL /NDL /NJH /NJS | Out-Null
+    $copyExit = $LASTEXITCODE
+    if ($copyExit -ge 8) { throw "Portable finalization copy failed: robocopy $copyExit" }
+}
+$finalManifest = Get-Content -LiteralPath (Join-Path $final 'build-manifest.json') -Raw | ConvertFrom-Json
+if ($finalManifest.commit -ne $commit) { throw 'Final build manifest does not match source commit' }
+foreach ($check in @(
+    @('GeoPublisher-Workbench.exe', $finalManifest.checksums.exe_sha256),
+    @('runtime\Library\bin\gdalinfo.exe', $finalManifest.checksums.gdal_sha256),
+    @('runtime\Library\share\proj\proj.db', $finalManifest.checksums.projdb_sha256),
+    @('Install-Offline-Shortcut.cmd', $finalManifest.checksums.offline_shortcut_sha256)
+)) {
+    if ((Get-FileHash -LiteralPath (Join-Path $final $check[0]) -Algorithm SHA256).Hash -ne $check[1]) {
+        throw "Portable finalization checksum mismatch: $($check[0])"
+    }
+}
 "PORTABLE_BUILT=$final"
 "EXE=$final\GeoPublisher-Workbench.exe"
 "GDAL=$version"

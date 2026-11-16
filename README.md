@@ -4,6 +4,8 @@
 
 **第一次使用？** 桌面入口已简化为「选择整个 GDB / 选择 MXD 地图 / 添加 SHP-TIFF → 检查图幅 → 确认发布」。高级参数、业务目录 SQL 和服务器部署默认收起到「更多工具」；转换完成后自动选入通过本地清单验证的 SHP，仍须确认 GeoServer 发布并人工验收 WMS。参见 [三步上手指南](docs/QUICKSTART-ZH.md)、[GDB/MXD 离线转换指南](docs/IMPORT-GDB-MXD-LYR.md)和 [离线主机/服务器部署](docs/OFFLINE-OPERATOR.md)。
 
+**P0-C：新增真实图幅空间边界只读核验。** 发布前可从桌面「更多工具 → 图幅空间边界核验」选择已签名分幅成果和真实标准图幅 Polygon SHP，按人工选择的图幅编号字段使用 GDAL/GEOS `ST_Covers` 检查每个实际几何。越界或图号缺失拒绝“通过”，本地输出不含完整几何的审核 JSON；不裁剪、不联网、不写 GeoServer/数据库。详见 [P0-C 离线图幅边界指南](docs/SHEET-BOUNDARY-P0C.md)。另外增加可在 Ubuntu 24.04 可信构建机上生成 **离线 Linux CLI wheelhouse** 的脚本与 CI 验收；目标 Linux 仍需预装 Python 3.12、GDAL/PROJ。
+
 **P0-B 第二阶段：支持离线 SHP 按人工核对的图幅编号字段真实拆分。** 在“发布任务 → 按图幅字段拆分 SHP”只读预览图幅编号与数量，明确确认后生成独立 SHP；通过数量、EPSG、字段、范围并集和 SHA256 核验后才加入发布列表。按图幅属性分组不等于地学边界裁剪或业务库入库。见 [离线属性分幅指南](docs/FIELD-SHEET-SPLIT-P0B.md)。
 
 **P0-B：逻辑图幅归组已增加人工审核流程。** 批量 GDB/MXD 完成后在图幅检查页点击「核对图幅关系」，按真实图幅编号将多个 GeoServer 图层归并到同一图幅节点；不确定或单层跨多幅一律阻断已确认归组。桌面新增跟随系统/浅色/深色主题、较大可点击按钮及紧凑窗口滚动。详见 [图幅关系审核指南](docs/SHEET-REVIEW-P0B.md) 与 [数据库授权登记](docs/CATALOG-REGISTER-GATE.md)。

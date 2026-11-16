@@ -22,6 +22,17 @@
 - 在不连外网的情况下启动桌面，加入**数学合成** SHP 进行本地预检，再在**专用隔离 GeoServer** 上执行发布和 WMS 验收。主业务 GeoServer/数据库不作为自动化测试目标。
 - 核对构建清单中 exe、GDAL、proj.db 及快捷方式脚本的哈希；在目标机扫描恶意软件、核查许可证/NOTICE，再决定是否正式交付。当前包是内部开发预览，尚未完成干净离线机器和正式分发验收。
 
+## Linux CLI 离线 wheelhouse（无现场环境也可开发、CI 验证）
+
+在可信 Ubuntu 24.04 x86_64 构建机（可联网获取公开 Python 依赖，**禁止放入真实地质资料**）上运行：
+
+```bash
+python3 -m pip install build==1.3.0
+bash scripts/build_linux_cli_offline.sh /opt/geopublisher-build-new
+```
+
+构建产物是附带全文件 SHA-256 的 `GeoPublisher-CLI-Ubuntu24-x86_64-<commit>.tar.gz`。拷贝到隔离主机并核对外层 SHA-256 后解压，执行 `bash install.sh /data/geopublisher-cli-new`。脚本首先检查 Linux x86_64、Python 3.12+venv、**预装 GDAL >=3.7/PROJ 且支持本地坐标参考系**、所有 SHA-256，然后执行 `pip --no-index --only-binary=:all: --find-links`，不请求互联网。此包**不自带 Python/GDAL 系统动态库**，不能以有 wheelhouse 为由宣称所有现场 Linux 均可直接使用。包含的图幅边界只读命令见 [P0-C 说明](SHEET-BOUNDARY-P0C.md)。
+
 ## Linux 内网服务器
 
 Windows 的 `Current` 包不能在 Linux 直接运行，亦不能用 Windows 的 ArcMap 10.x/ArcPy 进行 MXD 转换。无图形桌面的 Linux 服务器以 **CLI 发布引擎** 为主；如确实需要 GUI，需提供受支持的 Linux 图形会话并单独打包和验收。

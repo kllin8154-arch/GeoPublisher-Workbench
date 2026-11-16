@@ -69,6 +69,16 @@ def parser() -> argparse.ArgumentParser:
     split.add_argument("--preview", action="store_true", help="先只读列出图幅 ID、数量和校验摘要，不创建目录")
     split.add_argument("--review-sha256", help="实际转换时必须与只读预览打印的摘要完全一致")
     split.add_argument("--output", type=Path, help="已审核后选择全新本机目录，不得覆盖原数据")
+    boundary = sub.add_parser(
+        "sheet-boundary-check",
+        help="只读检查分幅要素是否位于人工指定的真实多边形图框内（不裁剪、不入库）",
+    )
+    boundary.add_argument("split_dir", type=Path, help="完整、经 SHA256 校验的 SHP 分幅结果目录")
+    boundary.add_argument("--boundary", required=True, type=Path, help="本机标准图幅面 SHP")
+    boundary.add_argument("--field", required=True, help="人工核对的图幅面编号字段")
+    boundary.add_argument("--gdal-bin", required=True, type=Path, help="本机受控 GDAL bin 目录")
+    boundary.add_argument("--encoding", help="图幅面源文件缺少 CPG 时需明确实际编码")
+    boundary.add_argument("--output", type=Path, help="可选：将审计报告保存到全新本机文件夹")
     status = sub.add_parser("status", help="查看本地任务记录")
     status.add_argument("--journal", type=Path, required=True)
     status.add_argument("--task")
@@ -387,6 +397,26 @@ def main(argv=None) -> int:
                 "requires_human_style_review": True,
             })
             return 3 if report["summary"].get("FAILED", 0) else 0
+        if args.command == "sheet-boundary-check":
+            from .datasets import GdalRuntime
+            from .sheet_boundary import inspect_sheet_boundaries, save_sheet_boundary_audit
+
+            runtime = GdalRuntime(args.gdal_bin)
+            audit = inspect_sheet_boundaries(
+                runtime, args.split_dir, args.boundary, args.field,
+                encoding=args.encoding,
+            )
+            if args.output is not None:
+                saved = save_sheet_boundary_audit(audit, args.output)
+                _print({**saved, "groups": audit["groups"], "geological_completeness_reviewed": False})
+            else:
+                _print({
+                    "status": audit["status"], "sheet_count": audit["sheet_count"],
+                    "outside_count": audit["outside_count"], "groups": audit["groups"],
+                    "report_created": False,
+                    "geological_completeness_reviewed": False,
+                })
+            return 0 if audit["status"] == "COVERED" else 3
         if args.command == "sheet-split":
             from .datasets import GdalRuntime
             from .sheet_split import inspect_sheet_split, split_sheet

@@ -28,6 +28,8 @@ def test_portable_build_bundles_shortcut_and_pins_runtime():
     assert "copy-item -literalpath $offlineshortcut" in script
     assert "field-sheet-split-p0b.md" in script
     assert "offline_guide_sha256" in script
+    assert "sheet-boundary-p0c.md" in script
+    assert "offline_boundary_guide_sha256" in script
     assert "move-item -literalpath $application -destination $final -erroraction stop" in script
     assert "& robocopy.exe $application $final /e /r:1 /w:1" in script
     assert "if ($copyexit -ge 8)" in script

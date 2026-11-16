@@ -1514,3 +1514,82 @@ def test_split_preview_cancel_does_not_schedule_write(window, monkeypatch):
     })
     assert window._pending_sheet_export is None
     assert "已取消" in window.activity.text()
+
+
+def test_boundary_check_is_under_more_tools_and_remains_compact(window, app):
+    window.show()
+    window.resize(900, 640)
+    app.processEvents()
+    assert not window.boundary_check_button.isVisible()
+    assert window.tools_panel.layout().rowCount() == 2
+    window.more_tools_button.setChecked(True)
+    app.processEvents()
+    assert window.boundary_check_button.isVisible()
+    assert window.boundary_check_button.height() >= 30
+    window.theme_selector.setCurrentIndex(window.theme_selector.findData("dark"))
+    app.processEvents()
+    assert window.boundary_check_button.isVisible()
+    assert "#141b1d" in window.styleSheet()
+
+
+def test_boundary_selector_requires_user_approved_string_field(window, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    calls = []
+    monkeypatch.setattr(
+        QInputDialog, "getItem",
+        lambda _parent, _title, _hint, items, *_rest: (
+            "SHEET_ID", True
+        ) if "SHEET_ID" in items else ("", False),
+    )
+    monkeypatch.setattr(
+        window, "_start_worker", lambda work, callback: calls.append((work, callback))
+    )
+    window._choose_boundary_field(
+        None, Path("some-export"), Path("bounds.shp"),
+        {"fields": [
+            {"name": "MEASURE", "type": "Real"},
+            {"name": "SHEET_ID", "type": "String"},
+        ], "geometry_type": "Polygon", "blocking_errors": []},
+    )
+    assert len(calls) == 1
+    assert "正在离线逐图幅检查" in window.activity.text()
+    assert window._boundary_running is True
+
+
+def test_boundary_failure_does_not_discard_existing_publish_plan(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    sentinel = {"task_id": "keep-existing-plan"}
+    window._plan = sentinel
+    window._boundary_running = True
+    window._worker_failed({
+        "code": "BOUNDARY_SOURCE_BLOCKED",
+        "message": "synthetic boundary invalid",
+    })
+    assert window._plan is sentinel
+    assert "离线图幅边界" in warnings[0][0]
+
+
+def test_boundary_result_dialog_reports_outside_count_and_not_database(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda _parent, title, message: warnings.append((title, message)))
+    window._show_boundary_result({
+        "status": "BLOCKED_OUTSIDE_BOUNDARY", "sheet_count": 2,
+        "outside_count": 1, "report": "D:/synthetic/audit.json",
+        "groups": [
+            {"sheet_code": "S001", "feature_count": 2, "outside_count": 1},
+            {"sheet_code": "S002", "feature_count": 1, "outside_count": 0},
+        ],
+    })
+    assert "越界要素：1" in warnings[0][1]
+    assert "未执行 GeoServer 发布或数据库写入" in warnings[0][1]
+    assert "越界" in window.activity.text()

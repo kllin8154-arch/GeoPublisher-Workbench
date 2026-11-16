@@ -119,3 +119,43 @@ jobs:
         run: uv sync --frozen --extra dev
       - name: Run real PostgreSQL 16 catalog readonly and authorized-write tests on synthetic schemas
         run: uv run --frozen --no-sync pytest -q -o faulthandler_timeout=20 tests/test_catalog_live_postgres16.py tests/test_catalog_register_postgres16.py
+
+
+  linux-offline-cli-wheelhouse:
+    # Uses disposable GitHub CI to build/test PUBLIC code and PyPI dependencies.
+    # No real site GIS files, production Linux hosts or business DB connections.
+    # Artifacts are not uploaded while repository artifact quota is exhausted.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROJ_NETWORK: "OFF"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Prepare a disposable Linux GDAL runtime and wheel builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gdal-bin
+          python -m pip install build==1.3.0
+          ogrinfo --version
+          gdalsrsinfo EPSG:4326 >/dev/null
+      - name: Build Linux CLI wheelhouse with SHA-256 manifest
+        run: |
+          bash scripts/build_linux_cli_offline.sh "$RUNNER_TEMP/geopublisher-linux-build"
+          archive="$(find "$RUNNER_TEMP/geopublisher-linux-build" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          sha256sum -c "$archive.sha256.txt"
+          mkdir -p "$RUNNER_TEMP/geopublisher-unpacked"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/geopublisher-unpacked"
+      - name: Install from wheelhouse without PyPI or online dependency resolution
+        run: |
+          unpacked="$(find "$RUNNER_TEMP/geopublisher-unpacked" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$unpacked"
+          bash "$unpacked/install.sh" "$RUNNER_TEMP/geopublisher-offline-installed"
+          "$RUNNER_TEMP/geopublisher-offline-installed/bin/geopub" --version
+          "$RUNNER_TEMP/geopublisher-offline-installed/bin/geopub" sheet-split --help >/dev/null
+          "$RUNNER_TEMP/geopublisher-offline-installed/bin/geopub" sheet-boundary-check --help >/dev/null
+          test -f "$unpacked/SHA256SUMS"

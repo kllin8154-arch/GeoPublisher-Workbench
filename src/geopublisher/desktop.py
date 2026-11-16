@@ -318,6 +318,8 @@ class MainWindow(QMainWindow):
         self._pending_gdb_conversion = None
         self._pending_sheet_inspection = None
         self._pending_sheet_export = None
+        self._pending_boundary_check = None
+        self._boundary_running = False
         self._offline_running = False
         self._server_deploy_running = False
         self._offline_report_path: Path | None = None
@@ -412,6 +414,11 @@ class MainWindow(QMainWindow):
         self.history_button = QPushButton("任务历史")
         self.folder_button = QPushButton("打开任务目录")
         self.business_tree_button = QPushButton("业务分类 / 比例尺 SQL")
+        self.boundary_check_button = QPushButton("图幅空间边界核验")
+        self.boundary_check_button.setToolTip(
+            "仅检查已拆分 SHP 是否被人工提供的图框面完整覆盖。"
+            "不会修改、裁剪或发布数据，也不会写数据库。"
+        )
         self.server_deploy_button = QPushButton("Linux 服务器部署")
         self.server_cancel_button = QPushButton("取消当前 SFTP 传输")
         self.server_cancel_button.hide()
@@ -428,6 +435,7 @@ class MainWindow(QMainWindow):
         self.more_tools_button = QPushButton("更多工具")
         self.more_tools_button.setCheckable(True)
         toolbar.addWidget(self.more_tools_button)
+        toolbar.addWidget(self.server_cancel_button)
         self._editable.append(self.more_tools_button)
         box.addLayout(toolbar)
         self.tools_panel = QWidget()
@@ -437,7 +445,7 @@ class MainWindow(QMainWindow):
         tools_grid.setVerticalSpacing(8)
         for index, widget in enumerate((
             self.history_button, self.business_tree_button, self.server_deploy_button,
-            self.help_button, self.folder_button, self.server_cancel_button,
+            self.help_button, self.folder_button, self.boundary_check_button,
         )):
             tools_grid.addWidget(widget, index // 3, index % 3)
         self.tools_panel.hide()
@@ -448,9 +456,13 @@ class MainWindow(QMainWindow):
         self.history_button.clicked.connect(self._toggle_history)
         self.folder_button.clicked.connect(self._open_output)
         self.business_tree_button.clicked.connect(lambda: self._export_business_tree())
+        self.boundary_check_button.clicked.connect(self._choose_boundary_check)
         self.server_deploy_button.clicked.connect(self._server_deploy)
         self.help_button.clicked.connect(self._show_quick_help)
-        self._editable.extend((self.business_tree_button, self.server_deploy_button, self.help_button))
+        self._editable.extend((
+            self.business_tree_button, self.boundary_check_button,
+            self.server_deploy_button, self.help_button,
+        ))
         self.history = QListWidget()
         self.history.setMaximumHeight(130)
         self.history.setVisible(False)
@@ -1296,6 +1308,130 @@ class MainWindow(QMainWindow):
             "所有转换、报告仅保存在本地，不覆盖原文件，也不自动发布到 GeoServer。",
         )
 
+    def _choose_boundary_check(self) -> None:
+        """Read-only GIS boundary audit without any site/DB connection."""
+        if self._thread is not None:
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择完整的属性分幅成果文件夹（含 sheet-split-manifest.json）",
+            str(self._work_dir),
+        )
+        if not directory:
+            return
+        boundary, _ = QFileDialog.getOpenFileName(
+            self, "选择已核对的标准图幅范围面 SHP", str(self._work_dir),
+            "Shapefile (*.shp)",
+        )
+        if not boundary:
+            return
+        from .datasets import DatasetError, GdalRuntime
+
+        try:
+            runtime = GdalRuntime(
+                self.gdal_bin.text().strip(),
+                expected_version=self.gdal_version.text().strip() or "3.13.3",
+                credential_env_names=(self.username_env.text(), self.password_env.text()),
+            )
+        except (DatasetError, ValueError) as exc:
+            QMessageBox.warning(self, "请先配置受控 GDAL", str(exc))
+            return
+        encoding = self.encoding.currentData()
+        self.activity.setText("只读检查本地图幅范围面字段，不访问服务器或数据库。")
+        self._boundary_running = True
+        self._start_worker(
+            lambda _event: runtime.inspect(Path(boundary), encoding=encoding),
+            lambda info: self._choose_boundary_field(
+                runtime, Path(directory), Path(boundary), info, encoding,
+            ),
+        )
+
+    def _choose_boundary_field(
+        self, runtime, directory: Path, boundary: Path, info: dict,
+        encoding: str | None = None,
+    ) -> None:
+        from .sheet_review import _suggest
+
+        if info.get("blocking_errors") or "Polygon" not in str(info.get("geometry_type", "")):
+            QMessageBox.warning(
+                self, "标准图幅范围面无效",
+                "请选择可读取、包含有效坐标系的 Polygon/MultiPolygon 图幅面 SHP。",
+            )
+            return
+        names = [
+            value["name"] for value in info.get("fields", [])
+            if value.get("type") == "String"
+        ]
+        if not names:
+            QMessageBox.warning(self, "缺少图幅编号字段", "标准图幅范围面须有字符串图幅编号字段。")
+            return
+        suggested = _suggest(info.get("fields", []))
+        names.sort(key=lambda value: (value not in suggested, value.casefold()))
+        chosen, ok = QInputDialog.getItem(
+            self, "确认标准图幅编号字段",
+            "请依据图框属性表核实编号字段（不会按名称自动批准）：",
+            names, 0, False,
+        )
+        if not ok:
+            self.activity.setText("已取消图幅空间边界核验，没有生成结果。")
+            return
+        self._pending_boundary_check = (
+            runtime, directory, boundary, chosen, encoding,
+        )
+        if self._thread is None:
+            pending, self._pending_boundary_check = self._pending_boundary_check, None
+            self._begin_boundary_check(*pending)
+
+    def _begin_boundary_check(
+        self, runtime, directory: Path, boundary: Path, field: str,
+        encoding: str | None,
+    ) -> None:
+        from .sheet_boundary import inspect_sheet_boundaries, save_sheet_boundary_audit
+
+        self._work_dir.mkdir(parents=True, exist_ok=True)
+        output = self._work_dir / (
+            datetime.now().strftime("boundary-review-%Y%m%d-%H%M%S-")
+            + uuid.uuid4().hex[:8]
+        )
+
+        def run(_event):
+            audit = inspect_sheet_boundaries(
+                runtime, directory, boundary, field, encoding=encoding,
+            )
+            saved = save_sheet_boundary_audit(audit, output)
+            return {**saved, "groups": audit["groups"]}
+
+        self.activity.setText(
+            "正在离线逐图幅检查实际几何覆盖关系，错误与越界将阻断通过结论。"
+        )
+        self._boundary_running = True
+        self._start_worker(run, self._show_boundary_result)
+
+    def _show_boundary_result(self, result: dict) -> None:
+        passed = result["status"] == "COVERED"
+        details = "\n".join(
+            f"{item['sheet_code']}：{item['feature_count']} 条，"
+            f"越界 {item['outside_count']} 条"
+            for item in result["groups"][:12]
+        )
+        if len(result["groups"]) > 12:
+            details += "\n……全部明细见本地审核报告"
+        summary = (
+            f"{'所有要素处于图框范围内' if passed else '存在真实几何越界，核验不通过'}\n"
+            f"核验图幅：{result['sheet_count']}，越界要素：{result['outside_count']}\n"
+            f"{details}\n\n"
+            f"本机报告：{result['report']}\n\n"
+            "只验证几何被图框覆盖，不代表地质内容、地形接缝、注记或 WMS 已验收；"
+            "未执行 GeoServer 发布或数据库写入。"
+        )
+        self.activity.setText(
+            ("图幅几何覆盖初检通过；" if passed else "图幅几何越界，已阻断；")
+            + f"本地记录：{result['report']}"
+        )
+        if passed:
+            QMessageBox.information(self, "离线图幅边界核验结果", summary)
+        else:
+            QMessageBox.warning(self, "图幅边界核验不通过", summary)
+
     def _choose_sheet_split(self) -> None:
         """Choose an explicitly reviewed sheet field; do not infer from names."""
         if self._thread is not None:
@@ -1901,9 +2037,14 @@ class MainWindow(QMainWindow):
         self._pending_gdb_conversion = None
         self._pending_sheet_inspection = None
         self._pending_sheet_export = None
+        self._pending_boundary_check = None
         if self._close_when_idle:
             return
         message = f"{error['code']}：{error['message']}"
+        if self._boundary_running:
+            self.activity.setText(message)
+            QMessageBox.warning(self, "离线图幅边界核验未完成", message)
+            return
         if self._server_deploy_running:
             self.activity.setText(message)
             QMessageBox.warning(self, "Linux 服务器阶段未完成", message)
@@ -1933,12 +2074,16 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.cancel_button.setEnabled(False)
         self._offline_running = False
+        self._boundary_running = False
         self._server_deploy_running = False
         self.server_cancel_button.hide()
         self.server_cancel_button.setEnabled(False)
         self.offline_cancel_button.setVisible(False)
         if self._close_when_idle:
             self._pending_gdb_conversion = None
+            self._pending_sheet_inspection = None
+            self._pending_sheet_export = None
+            self._pending_boundary_check = None
             self._close_when_idle = False
             QTimer.singleShot(0, self.close)
             return
@@ -1952,6 +2097,9 @@ class MainWindow(QMainWindow):
         elif self._pending_sheet_export is not None:
             pending, self._pending_sheet_export = self._pending_sheet_export, None
             self._begin_sheet_split_export(*pending)
+        elif self._pending_boundary_check is not None:
+            pending, self._pending_boundary_check = self._pending_boundary_check, None
+            self._begin_boundary_check(*pending)
 
     @Slot(object)
     def _receive_event(self, event: dict) -> None:
@@ -2844,7 +2992,8 @@ class MainWindow(QMainWindow):
             "2. 选择整个 GDB / MXD 或添加 SHP、TIFF。一个 SHP 含多张图幅时，\n"
             "   先点「按图幅字段拆分 SHP」，核对字段与数量后生成各图幅副本。\n"
             "3. 点「下一步：检查图幅」，确认坐标系与样式，再点「确认并发布」。\n"
-            "4. 查看 WMS 验收图，按实际编号核对图幅归组后生成数据库目录草稿。\n\n"
+            "4. 更多工具中可用「图幅空间边界核验」对照标准图框检查实际几何。\n"
+            "5. 查看 WMS 验收图，按实际编号核对归组后生成数据库目录草稿。\n\n"
             "遇到复杂样式、编码或缺失坐标系，再展开高级选项。\n"
             "多个 TIFF 必须明确按独立图层发布；Mosaic/Pyramid 拼接暂不支持。\n"
             "遇到失败或未知结果，请先阅读任务报告，不要盲目重试。\n"
@@ -2907,6 +3056,7 @@ class MainWindow(QMainWindow):
                     self._pending_gdb_conversion = None
                     self._pending_sheet_inspection = None
                     self._pending_sheet_export = None
+                    self._pending_boundary_check = None
                     self.activity.setText("已安排操作结束后自动关闭，当前操作继续在本机执行。")
                 event.ignore()
                 return

@@ -117,5 +117,5 @@ jobs:
         run: python -m pip install uv==0.13.4
       - name: Install locked runtime and test dependencies
         run: uv sync --frozen --extra dev
-      - name: Run real PostgreSQL 16 read-only catalog test on synthetic schema
-        run: uv run --frozen --no-sync pytest -q -o faulthandler_timeout=20 tests/test_catalog_live_postgres16.py
+      - name: Run real PostgreSQL 16 catalog readonly and authorized-write tests on synthetic schemas
+        run: uv run --frozen --no-sync pytest -q -o faulthandler_timeout=20 tests/test_catalog_live_postgres16.py tests/test_catalog_register_postgres16.py

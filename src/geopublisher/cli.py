@@ -114,12 +114,61 @@ def parser() -> argparse.ArgumentParser:
     db_check.add_argument("--database", required=True, help="目标 PostgreSQL 数据库名")
     db_check.add_argument("--database-user", required=True, help="具备 SELECT 权限的数据库账号")
     db_check.add_argument("--output", type=Path, required=True, help="本地全新只读证据目录")
+    register = sub.add_parser(
+        "server-catalog-register",
+        help="独立授权：核验只读证据后，向业务 PostgreSQL 事务登记父子节点并回查（默认拒绝）",
+    )
+    register.add_argument("--profile", type=Path, required=True, help="已审核的内网 SSH/Linux 连接配置")
+    register.add_argument("--catalog-json", type=Path, required=True, help="最终确认分类及 WMS 的业务目录 JSON")
+    register.add_argument("--evidence", type=Path, required=True, help="同一 JSON 的最新只读核验报告")
+    register.add_argument("--database", required=True)
+    register.add_argument("--database-user", required=True, help="另行授权的业务目录登记账号")
+    register.add_argument("--output", type=Path, required=True, help="本机全新审计目录")
     return root
 
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "server-catalog-register":
+            from .catalog_live import review_mapping
+            from .catalog_register import register_catalog, registration_phrase
+            from .server_deploy import LinuxTarget, open_target
+
+            target = LinuxTarget.load(args.profile)
+            _, profile, digest = review_mapping(args.catalog_json)
+            phrase = registration_phrase(args.database, digest)
+            _print({
+                "action": "AUTHORIZED_BUSINESS_DB_REGISTRATION",
+                "target": target.safe_info(), "database": args.database,
+                "schema": profile["target_schema"],
+                "groups": len(profile["groups"]), "layers": len(profile["layers"]),
+                "profile_sha256": digest,
+                "automatic_retry": False, "warning": "会写真实业务数据库；未知结果需先人工核对。",
+            })
+            if not sys.stdin.isatty():
+                raise ValueError("登记必须由实施人员在本机终端交互确认，不能使用 --yes 或无人值守执行。")
+            response = input(f"明确批准写入上述业务数据库，请完整输入 {phrase}：").strip()
+            if response != phrase:
+                _print({"status": "NOT_AUTHORIZED", "database_modified": False})
+                return 2
+            ssh_pass = (
+                getpass.getpass("SSH 登录密码（本次内存使用）：")
+                if target.mode == "ssh" and target.auth == "password" else None
+            )
+            key_passphrase = (
+                getpass.getpass("SSH 私钥口令（本次内存使用）：") or None
+                if target.mode == "ssh" and target.auth == "key" else None
+            )
+            db_password = getpass.getpass("PostgreSQL 登记账号密码（不保存）：")
+            with open_target(target, password=ssh_pass, passphrase=key_passphrase) as session:
+                result = register_catalog(
+                    target, session, args.catalog_json, args.evidence,
+                    database=args.database, username=args.database_user,
+                    password=db_password, output=args.output, confirmation=response,
+                )
+            _print(result)
+            return 0 if result["status"] == "VERIFIED_REGISTERED" else 3
         if args.command == "server-catalog-doctor":
             from .catalog_live import probe_catalog, review_mapping
             from .server_deploy import LinuxTarget, open_target

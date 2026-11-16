@@ -80,7 +80,7 @@
 为了防止误将 Mosaic/Pyramid 的切片分别建成大量图层。确认单文件互相独立后才能选择。
 
 **Q：显示执行成功，为何业务目录没有图层？**
-GeoServer 发布与业务系统的 `cx_maplayer` 等目录注册是不同流程。工作台首版只导出受控目录绑定与 SQL，不会自动写业务数据库。
+GeoServer 发布与业务系统的 `cx_maplayer` 等目录注册是不同流程。工作台默认只生成目录草稿和受控 SQL；经人工核对真实 schema、图幅、WMS 和只读核验后，可使用独立的“数据库父子节点登记”操作进行明确授权的事务写入与只读回查。详见 [登记操作](CATALOG-REGISTER-GATE.md)。
 
 **Q：程序可以放 C 盘以外吗？**
 可以。当前内部便携预览放在 `D:\Java-p\GeoPublisher-Workbench-Portable\Current`，桌面快捷方式直接指向 EXE；迁移到离线主机后运行随包的 `Install-Offline-Shortcut.cmd` 即可重建快捷方式（不联网、不需要 Python）。受控 GDAL/PROJ 的安装路径暂须使用英文目录；**GIS 数据文件**仍支持按已验证的中文路径使用。

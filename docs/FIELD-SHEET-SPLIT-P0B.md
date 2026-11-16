@@ -29,6 +29,8 @@ geopub sheet-split "D:\input\map.shp" --field SHEET_ID --gdal-bin "D:\GeoPublish
 
 Windows 安装包没有独立的 `geopub.exe` CLI；以上命令适用于安装了 geopublisher 包的离线 Python 环境。普通 Windows 实施人员只需用桌面界面。对 Linux 路径使用其本机的 GDAL bin 和输出路径，不运行 Windows EXE。
 
+**补充：** 拆分成果可继续使用 [P0-C 空间边界核验](SHEET-BOUNDARY-P0C.md) 对比经人工确认的标准图幅面，逐条检查实际几何覆盖，不能用分幅统计表替代真正的地学图框校验。
+
 ## 有效性与失败处理
 
 - 只支持 SHP，图幅字段类型为 **String / Integer / Integer64**。最多 **100 个不同图幅编号**；无效编号/空值/编号大小写冲突/超出数量上限一律阻断，绝不静默跳过；整数编号可能丢失前导 0，标准图号建议用字符串字段保存。

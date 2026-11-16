@@ -61,6 +61,14 @@ def parser() -> argparse.ArgumentParser:
     gdb.add_argument("--include-annotation-bounds", action="store_true", help="允许导出注记边界，但不保留完整文字排版")
     gdb.add_argument("--layer", action="append", help="只处理指定 GDB 图层；可重复使用")
     gdb.add_argument("--preview", action="store_true", help="只读预览，不生成任何输出文件")
+    split = sub.add_parser("sheet-split", help="本地 SHP 经人工核对图幅编号字段后，逐值拆分并校验（不发布）")
+    split.add_argument("source", type=Path, help="一个已核实字段及范围的本地 SHP")
+    split.add_argument("--field", required=True, help="人工确认的真实图幅编号字段名")
+    split.add_argument("--gdal-bin", required=True, type=Path, help="受控离线 GDAL bin 目录")
+    split.add_argument("--encoding", help="缺失 CPG 时人工指定编码，如 GBK")
+    split.add_argument("--preview", action="store_true", help="先只读列出图幅 ID、数量和校验摘要，不创建目录")
+    split.add_argument("--review-sha256", help="实际转换时必须与只读预览打印的摘要完全一致")
+    split.add_argument("--output", type=Path, help="已审核后选择全新本机目录，不得覆盖原数据")
     status = sub.add_parser("status", help="查看本地任务记录")
     status.add_argument("--journal", type=Path, required=True)
     status.add_argument("--task")
@@ -379,6 +387,37 @@ def main(argv=None) -> int:
                 "requires_human_style_review": True,
             })
             return 3 if report["summary"].get("FAILED", 0) else 0
+        if args.command == "sheet-split":
+            from .datasets import GdalRuntime
+            from .sheet_split import inspect_sheet_split, split_sheet
+
+            runtime = GdalRuntime(args.gdal_bin)
+            if args.preview:
+                report = inspect_sheet_split(runtime, args.source, args.field, encoding=args.encoding)
+                _print({
+                    "status": "SHEET_SPLIT_READ_ONLY",
+                    "source": report["source"], "field": report["field"],
+                    "source_count": report["source_count"], "source_bbox": report["source_bbox"],
+                    "group_count": len(report["groups"]), "groups": report["groups"],
+                    "review_sha256": report["review_sha256"],
+                    "warning": "这些是属性分组，不代表图幅地学边界已核验；转换需人工输入摘要。",
+                })
+                return 0
+            if not args.output or not args.review_sha256:
+                raise ValueError("实际拆分须同时提供 --output 和先前只读预览的 --review-sha256。")
+            outcome = split_sheet(
+                runtime, args.source, args.field, args.output,
+                review_sha256=args.review_sha256, encoding=args.encoding,
+            )
+            _print({
+                "status": outcome["status"], "output": outcome["destination"],
+                "groups": len(outcome["groups"]), "total_features": outcome["source_count"],
+                "manifest": str(Path(outcome["destination"]) / "sheet-split-manifest.json"),
+                "summary_csv": str(Path(outcome["destination"]) / outcome["summary_csv"]),
+                "source_unchanged": outcome["source_unchanged"],
+                "requires_boundary_review": True, "server_changes": False,
+            })
+            return 0
         if args.command == "plan":
             plan = build_plan(
                 Environment.load(args.environment),

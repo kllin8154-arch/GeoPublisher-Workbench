@@ -1455,3 +1455,62 @@ def test_plan_changes_clear_old_sheet_review_and_disable_related_button(window, 
     window._invalidate_plan()
     assert window._sheet_review_file is None
     assert not window.sheet_review_button.isEnabled()
+
+
+def test_split_shp_action_is_visible_in_simple_mode_and_themed(window, app):
+    from PySide6.QtWidgets import QPushButton
+
+    window.show()
+    window.resize(900, 640)
+    app.processEvents()
+    buttons = [
+        child for child in window.findChildren(QPushButton)
+        if child.text() == "按图幅字段拆分 SHP"
+    ]
+    assert len(buttons) == 1
+    assert buttons[0].isVisible()
+    assert buttons[0].height() >= 30
+    window.theme_selector.setCurrentIndex(window.theme_selector.findData("dark"))
+    app.processEvents()
+    assert buttons[0].isVisible()
+    assert "#141b1d" in window.styleSheet()
+
+
+def test_split_field_selector_requires_user_selection(window, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    calls = []
+    monkeypatch.setattr(
+        QInputDialog, "getItem", lambda _parent, _title, _label, names, *_args:
+        ("SHEET_ID", True) if names[0] == "SHEET_ID" else ("", False)
+    )
+    monkeypatch.setattr(window, "_start_worker", lambda work, callback:
+                        calls.append((work, callback)))
+    window._choose_split_field(None, Path("synthetic.shp"), {
+        "fields": [
+            {"name": "OTHER", "type": "String"},
+            {"name": "SHEET_ID", "type": "String"},
+        ],
+        "blocking_errors": [],
+    })
+    assert len(calls) == 1
+    assert "只读统计" in window.activity.text()
+
+
+def test_split_preview_cancel_does_not_schedule_write(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+    )
+    window._show_sheet_split_preview(None, Path("synthetic.shp"), "SHEET_ID", {
+        "source_count": 3,
+        "groups": [
+            {"sheet_code": "A", "feature_count": 2},
+            {"sheet_code": "B", "feature_count": 1},
+        ],
+        "review_sha256": "f" * 64,
+    })
+    assert window._pending_sheet_export is None
+    assert "已取消" in window.activity.text()

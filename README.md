@@ -4,6 +4,8 @@
 
 **第一次使用？** 桌面入口已简化为「选择整个 GDB / 选择 MXD 地图 / 添加 SHP-TIFF → 检查图幅 → 确认发布」。高级参数、业务目录 SQL 和服务器部署默认收起到「更多工具」；转换完成后自动选入通过本地清单验证的 SHP，仍须确认 GeoServer 发布并人工验收 WMS。参见 [三步上手指南](docs/QUICKSTART-ZH.md)、[GDB/MXD 离线转换指南](docs/IMPORT-GDB-MXD-LYR.md)和 [离线主机/服务器部署](docs/OFFLINE-OPERATOR.md)。
 
+**P0-B 第二阶段：支持离线 SHP 按人工核对的图幅编号字段真实拆分。** 在“发布任务 → 按图幅字段拆分 SHP”只读预览图幅编号与数量，明确确认后生成独立 SHP；通过数量、EPSG、字段、范围并集和 SHA256 核验后才加入发布列表。按图幅属性分组不等于地学边界裁剪或业务库入库。见 [离线属性分幅指南](docs/FIELD-SHEET-SPLIT-P0B.md)。
+
 **P0-B：逻辑图幅归组已增加人工审核流程。** 批量 GDB/MXD 完成后在图幅检查页点击「核对图幅关系」，按真实图幅编号将多个 GeoServer 图层归并到同一图幅节点；不确定或单层跨多幅一律阻断已确认归组。桌面新增跟随系统/浅色/深色主题、较大可点击按钮及紧凑窗口滚动。详见 [图幅关系审核指南](docs/SHEET-REVIEW-P0B.md) 与 [数据库授权登记](docs/CATALOG-REGISTER-GATE.md)。
 
 **当前版本：0.1.0 开发预览。** 已在 Windows 10 和 Linux 的隔离环境中，使用 GeoServer 2.24.4、GDAL 3.13.3 与合成数据完成核心发布、重复执行、配置清理及上传响应丢失验证。Windows 原生桌面启动与字体烟测、受控 GDAL 已取得本地证据；完整 Windows/Linux 离线发行物与现场环境仍需验收，当前构建不等于可直接交付内网的离线安装包。详见 [验证汇总](docs/VALIDATION.md) 和 [Windows 本地验证报告](docs/VALIDATION-WINDOWS-2026-11-01.md)。

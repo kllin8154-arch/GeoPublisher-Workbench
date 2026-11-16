@@ -64,6 +64,9 @@ $share = Join-Path $runtime 'Library\share'
 $exe = Join-Path $application 'GeoPublisher-Workbench.exe'
 if (-not (Test-Path (Join-Path $share 'proj\proj.db')) -or -not (Test-Path (Join-Path $share 'gdal'))) { throw 'Incomplete GDAL/PROJ data directory' }
 Copy-Item -LiteralPath $offlineShortcut -Destination (Join-Path $application 'Install-Offline-Shortcut.cmd') -ErrorAction Stop
+foreach ($guide in @('QUICKSTART-ZH.md', 'FIELD-SHEET-SPLIT-P0B.md', 'SHEET-REVIEW-P0B.md')) {
+    Copy-Item -LiteralPath (Join-Path $repo ('docs\' + $guide)) -Destination (Join-Path $application $guide) -ErrorAction Stop
+}
 $oldPath = $env:PATH
 $oldGdal = $env:GDAL_DATA
 $oldProj = $env:PROJ_DATA
@@ -125,6 +128,7 @@ $manifest = [ordered]@{
         gdal_sha256 = (Get-FileHash -LiteralPath (Join-Path $bin 'gdalinfo.exe') -Algorithm SHA256).Hash
         projdb_sha256 = (Get-FileHash -LiteralPath (Join-Path $share 'proj\proj.db') -Algorithm SHA256).Hash
         offline_shortcut_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'Install-Offline-Shortcut.cmd') -Algorithm SHA256).Hash
+        offline_guide_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'FIELD-SHEET-SPLIT-P0B.md') -Algorithm SHA256).Hash
     }
     third_party_count = $packages.Count
 }
@@ -149,7 +153,8 @@ foreach ($check in @(
     @('GeoPublisher-Workbench.exe', $finalManifest.checksums.exe_sha256),
     @('runtime\Library\bin\gdalinfo.exe', $finalManifest.checksums.gdal_sha256),
     @('runtime\Library\share\proj\proj.db', $finalManifest.checksums.projdb_sha256),
-    @('Install-Offline-Shortcut.cmd', $finalManifest.checksums.offline_shortcut_sha256)
+    @('Install-Offline-Shortcut.cmd', $finalManifest.checksums.offline_shortcut_sha256),
+    @('FIELD-SHEET-SPLIT-P0B.md', $finalManifest.checksums.offline_guide_sha256)
 )) {
     if ((Get-FileHash -LiteralPath (Join-Path $final $check[0]) -Algorithm SHA256).Hash -ne $check[1]) {
         throw "Portable finalization checksum mismatch: $($check[0])"

@@ -117,6 +117,7 @@ def build_plan(
         raise ConfigError("PLAN_EXISTS", "任务目录已被另一操作占用；请使用新目录。") from exc
     resources = []
     used_names: set[str] = set()
+    verified_split_dirs: dict[Path, set[Path]] = {}
     for index, source in enumerate(paths):
         resource_id = f"r{index + 1:04d}"
         target = validate_name(target_name or _target_name(source), "图层名")
@@ -153,12 +154,39 @@ def build_plan(
                 (item["sha256"] for item in artifact["source_hashes"]
                  if item["path"] == str(source)), None,
             )
+            split_marker = source.parent / "sheet-split-manifest.json"
+            if split_marker.exists() or split_marker.is_symlink():
+                from .sheet_split import verified_split_sources
+
+                if source.parent not in verified_split_dirs:
+                    verified_split_dirs[source.parent] = set(
+                        verified_split_sources(source.parent)
+                    )
+                if source not in verified_split_dirs[source.parent]:
+                    raise ConfigError("SPLIT_SOURCE_UNVERIFIED", "SHP 不在已核验的完整分幅报告中。")
+                split_report = json.loads(split_marker.read_text(encoding="utf-8-sig"))
+                frozen = [
+                    {"path": str(split_marker), "sha256": digest_file(split_marker)},
+                    {
+                        "path": str(source.parent / split_report["summary_csv"]),
+                        "sha256": split_report["summary_csv_sha256"],
+                    },
+                    *split_report["source_hashes"],
+                ]
+                original_batch = split_report.get("source_batch")
+                if original_batch:
+                    frozen.append({
+                        "path": original_batch["manifest_path"],
+                        "sha256": original_batch["manifest_sha256"],
+                    })
+                artifact["source_hashes"].extend(frozen)
             batch = conversion_batch(source, source_sha256=source_sha) if source_sha else None
             if batch:
                 resource["batch_source"] = batch
-                artifact["source_hashes"].append({
-                    "path": batch["manifest_path"], "sha256": batch["manifest_sha256"],
-                })
+                if not split_marker.exists():
+                    artifact["source_hashes"].append({
+                        "path": batch["manifest_path"], "sha256": batch["manifest_sha256"],
+                    })
             style_file = resource_dir / "style.sld"
             selected_sld = style_sources.get(source.resolve()) or sld
             if selected_sld:
@@ -317,11 +345,12 @@ def validate_plan(plan: dict) -> None:
                     raise ValueError()
                 marker = Path(batch["manifest_path"])
                 expected = (
-                    "conversion-report.json" if batch["format"] == "GDB"
-                    else "mxd-export-manifest.json"
+                    {"conversion-report.json", "sheet-split-manifest.json"}
+                    if batch["format"] == "GDB"
+                    else {"mxd-export-manifest.json", "sheet-split-manifest.json"}
                 )
                 if (
-                    not marker.is_absolute() or marker.name != expected
+                    not marker.is_absolute() or marker.name not in expected
                     or marker.parent != Path(resource["inspection"]["source"]).parent
                     or not any(
                         item.get("path") == str(marker)

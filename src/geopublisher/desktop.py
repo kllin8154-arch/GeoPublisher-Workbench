@@ -316,6 +316,8 @@ class MainWindow(QMainWindow):
         self._cancel = threading.Event()
         self._connection_testing = False
         self._pending_gdb_conversion = None
+        self._pending_sheet_inspection = None
+        self._pending_sheet_export = None
         self._offline_running = False
         self._server_deploy_running = False
         self._offline_report_path: Path | None = None
@@ -511,20 +513,21 @@ class MainWindow(QMainWindow):
         self.sources.paths_dropped.connect(self.add_sources)
         self._editable.append(self.sources)
         box.addWidget(self.sources)
-        row = QHBoxLayout()
-        for label, action in (
+        actions = QGridLayout()
+        for index, (label, action) in enumerate((
             ("添加已有数据目录", self._choose_source_folder),
+            ("按图幅字段拆分 SHP", self._choose_sheet_split),
             ("其他转换工具", self._arcgis_conversion),
             ("清空列表", self._clear_sources),
-        ):
+        )):
             button = QPushButton(label)
             button.clicked.connect(action)
-            row.addWidget(button)
+            actions.addWidget(button, index // 2, index % 2)
             self._editable.append(button)
-        row.addStretch()
         self.source_count = QLabel("尚未添加数据")
-        row.addWidget(self.source_count)
-        box.addLayout(row)
+        self.source_count.setObjectName("muted")
+        actions.addWidget(self.source_count, 2, 0, 1, 2)
+        box.addLayout(actions)
         self.source_hint = QLabel("一个 GDB/MXD 中的合格图层可逐个发布；发布后生成业务数据库父子节点审核草稿，实际入库需单独核验。")
         self.source_hint.setObjectName("muted")
         self.source_hint.setWordWrap(True)
@@ -1036,7 +1039,8 @@ class MainWindow(QMainWindow):
         if selected:
             folder = Path(selected)
             if any((folder / name).exists() for name in (
-                "conversion-report.json", "mxd-export-manifest.json"
+                "conversion-report.json", "mxd-export-manifest.json",
+                "sheet-split-manifest.json",
             )):
                 self._attach_conversion_batch(folder)
             else:
@@ -1291,6 +1295,164 @@ class MainWindow(QMainWindow):
             "需要先在本机 QGIS 安装 Style Assistant 0.4.0 和 SLYR Community。\n"
             "所有转换、报告仅保存在本地，不覆盖原文件，也不自动发布到 GeoServer。",
         )
+
+    def _choose_sheet_split(self) -> None:
+        """Choose an explicitly reviewed sheet field; do not infer from names."""
+        if self._thread is not None:
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self, "选择一个包含多张图幅的本地 SHP（原文件不变）",
+            str(self._work_dir), "Shapefile (*.shp)",
+        )
+        if not source:
+            return
+        from .datasets import DatasetError, GdalRuntime
+
+        try:
+            runtime = GdalRuntime(
+                self.gdal_bin.text().strip(),
+                expected_version=self.gdal_version.text().strip() or "3.13.3",
+                credential_env_names=(self.username_env.text(), self.password_env.text()),
+            )
+        except (DatasetError, ValueError) as exc:
+            QMessageBox.warning(self, "受控 GDAL 未配置", str(exc))
+            return
+        self.activity.setText("只读获取 SHP 字段，尚未拆分、覆盖文件或连接 GeoServer。")
+        encoding = self.encoding.currentData()
+        self._start_worker(
+            lambda _event: runtime.inspect(Path(source), encoding=encoding),
+            lambda info: self._choose_split_field(runtime, Path(source), info, encoding),
+        )
+
+    def _choose_split_field(
+        self, runtime, source: Path, info: dict, encoding: str | None = None,
+    ) -> None:
+        from .sheet_review import _suggest
+
+        if info.get("blocking_errors"):
+            QMessageBox.warning(
+                self, "原始 SHP 预检未通过",
+                "先解决源文件缺失、编码、坐标系等问题，再进行真实图幅分离。",
+            )
+            return
+        allowed = [
+            field["name"] for field in info.get("fields", [])
+            if field.get("type") in {"String", "Integer", "Integer64"}
+        ]
+        if not allowed:
+            QMessageBox.warning(self, "未发现可用图幅字段", "仅支持字符串或整数的图幅编号字段。")
+            return
+        suggested = _suggest(info["fields"])
+        allowed.sort(key=lambda name: (name not in suggested, name.casefold()))
+        chosen, ok = QInputDialog.getItem(
+            self, "选择真实图幅编号字段",
+            "请核实属性表后选择图幅编号字段。候选字段仅供参考，不会自动批准：",
+            allowed, 0, False,
+        )
+        if not ok:
+            self.activity.setText("已取消：未执行属性分幅。")
+            return
+        self._pending_sheet_inspection = (runtime, source, chosen, encoding)
+        if self._thread is None:
+            pending, self._pending_sheet_inspection = self._pending_sheet_inspection, None
+            self._begin_sheet_split_preview(*pending)
+
+    def _begin_sheet_split_preview(
+        self, runtime, source: Path, field: str, encoding: str | None = None,
+    ) -> None:
+        from .sheet_split import inspect_sheet_split
+
+        self.activity.setText("正在只读统计各图幅编号、记录数并检查遗漏要素；不会创建输出文件。")
+        self._start_worker(
+            lambda _event: inspect_sheet_split(runtime, source, field, encoding=encoding),
+            lambda preview: self._show_sheet_split_preview(
+                runtime, source, field, preview, encoding,
+            ),
+        )
+
+    def _show_sheet_split_preview(
+        self, runtime, source: Path, field: str, preview: dict,
+        encoding: str | None = None,
+    ) -> None:
+        values = preview["groups"]
+        preview_lines = "\n".join(
+            f"  {group['sheet_code']}：{group['feature_count']} 条"
+            for group in values[:14]
+        )
+        if len(values) > 14:
+            preview_lines += f"\n  ……还有 {len(values) - 14} 个图幅"
+        message = (
+            f"原始 SHP：{source.name}\n"
+            f"你确认的字段：{field}\n"
+            f"全部 {preview['source_count']} 条要素，"
+            f"识别 {len(values)} 个不同编号：\n{preview_lines}\n\n"
+            "仅按这个属性值拆分，不进行地质图幅边界裁剪。\n"
+            "确认前请核对实际字段、图号和预览数量。"
+            "生成的文件只会放在全新本地目录，不修改原 SHP，"
+            "也不会自动向 GeoServer 或数据库写入。"
+        )
+        answer = QMessageBox.question(
+            self, "确认按图幅编号拆分",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.activity.setText("已取消图幅拆分；原始 SHP 没有变化。")
+            return
+        parent = Path(self.output_root.text()).expanduser().absolute()
+        if parent == source.parent or parent.is_relative_to(source.parent):
+            QMessageBox.warning(
+                self, "输出位置与源目录重叠",
+                "请在高级设置中选择源文件夹之外的任务目录，避免覆盖或误识别原图层。",
+            )
+            return
+        output = parent / (
+            datetime.now().strftime("sheet-split-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+        )
+        self._pending_sheet_export = (
+            runtime, source, field, output, preview["review_sha256"], encoding,
+        )
+        if self._thread is None:
+            pending, self._pending_sheet_export = self._pending_sheet_export, None
+            self._begin_sheet_split_export(*pending)
+
+    def _begin_sheet_split_export(
+        self, runtime, source: Path, field: str, output: Path, review_sha256: str,
+        encoding: str | None = None,
+    ) -> None:
+        from .sheet_split import split_sheet
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self._cancel.clear()
+        self._offline_running = True
+        self.offline_cancel_button.setEnabled(True)
+        self.offline_cancel_button.show()
+        self.activity.setText("离线逐图幅导出中；可请求安全取消。所有临时产物保存在隔离目录。")
+        self._start_worker(
+            lambda _event: split_sheet(
+                runtime, source, field, output,
+                review_sha256=review_sha256, encoding=encoding,
+                cancelled=self._cancel.is_set,
+            ),
+            self._show_sheet_split_result,
+        )
+
+    def _show_sheet_split_result(self, result: dict) -> None:
+        report = Path(result["destination"]) / "sheet-split-manifest.json"
+        self._offline_report_path = report
+        self.offline_report_button.setEnabled(True)
+        message = (
+            f"本地分幅验证通过：共 {result['source_count']} 条要素，"
+            f"拆分为 {len(result['groups'])} 个属性图幅；"
+            "每份字段、EPSG、记录数和空间范围已检查。\n"
+            f"核对表：{result['destination']}\\sheet-split-summary.csv\n"
+            "这不代表图幅边界和地质标注已人工验收。"
+        )
+        if self._attach_conversion_batch(result["destination"]):
+            self.activity.setText(message + "\n" + self.activity.text())
+        else:
+            self.activity.setText(message + "\n分幅结果须核对完成清单后再手动加入。")
 
     def _choose_gdb_and_export(self, include_annotations: bool = False) -> None:
         """Explicit local batch conversion, never a GeoServer upload."""
@@ -1737,6 +1899,8 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _worker_failed(self, error: dict) -> None:
         self._pending_gdb_conversion = None
+        self._pending_sheet_inspection = None
+        self._pending_sheet_export = None
         if self._close_when_idle:
             return
         message = f"{error['code']}：{error['message']}"
@@ -1782,6 +1946,12 @@ class MainWindow(QMainWindow):
         if self._pending_gdb_conversion is not None:
             pending, self._pending_gdb_conversion = self._pending_gdb_conversion, None
             self._begin_gdb_conversion(*pending)
+        elif self._pending_sheet_inspection is not None:
+            pending, self._pending_sheet_inspection = self._pending_sheet_inspection, None
+            self._begin_sheet_split_preview(*pending)
+        elif self._pending_sheet_export is not None:
+            pending, self._pending_sheet_export = self._pending_sheet_export, None
+            self._begin_sheet_split_export(*pending)
 
     @Slot(object)
     def _receive_event(self, event: dict) -> None:
@@ -2671,8 +2841,10 @@ class MainWindow(QMainWindow):
             "GeoPublisher 使用帮助",
             "首次使用（建议先完成环境设置）：\n"
             "1. 填写 GeoServer 地址、工作空间和本次账号密码，点「测试连接（只读）」。\n"
-            "2. 选择整个 GDB / MXD 或添加 SHP、TIFF，点「下一步：检查图幅」。\n"
-            "3. 确认图层、坐标系和提示，点「确认并发布」。完成后查看地图预览。\n\n"
+            "2. 选择整个 GDB / MXD 或添加 SHP、TIFF。一个 SHP 含多张图幅时，\n"
+            "   先点「按图幅字段拆分 SHP」，核对字段与数量后生成各图幅副本。\n"
+            "3. 点「下一步：检查图幅」，确认坐标系与样式，再点「确认并发布」。\n"
+            "4. 查看 WMS 验收图，按实际编号核对图幅归组后生成数据库目录草稿。\n\n"
             "遇到复杂样式、编码或缺失坐标系，再展开高级选项。\n"
             "多个 TIFF 必须明确按独立图层发布；Mosaic/Pyramid 拼接暂不支持。\n"
             "遇到失败或未知结果，请先阅读任务报告，不要盲目重试。\n"
@@ -2733,6 +2905,8 @@ class MainWindow(QMainWindow):
                 if answer == QMessageBox.StandardButton.Yes:
                     self._close_when_idle = True
                     self._pending_gdb_conversion = None
+                    self._pending_sheet_inspection = None
+                    self._pending_sheet_export = None
                     self.activity.setText("已安排操作结束后自动关闭，当前操作继续在本机执行。")
                 event.ignore()
                 return

@@ -1949,15 +1949,23 @@ class MainWindow(QMainWindow):
             )[0] or catalog_file.text())
         )
         form.addRow("待核查业务目录 JSON", catalog_row)
+        db_evidence = QLineEdit()
+        db_evidence.setPlaceholderText("选择该 JSON 对应的 business_db_readonly_review.json")
+        form.addRow("最近只读核验报告", dialog_path_row(
+            db_evidence, lambda: db_evidence.setText(QFileDialog.getOpenFileName(
+                dialog, "选择已核验的业务数据库只读报告", str(self._work_dir),
+                "JSON 只读核验报告 (*.json)"
+            )[0] or db_evidence.text())
+        ))
         db_name = QLineEdit()
         db_name.setPlaceholderText("实际 PostgreSQL 数据库名")
         form.addRow("业务数据库名", db_name)
         db_user = QLineEdit()
         db_user.setPlaceholderText("建议使用只能 SELECT 的数据库账号")
-        form.addRow("数据库只读用户名", db_user)
+        form.addRow("数据库用户名", db_user)
         db_password = QLineEdit()
         db_password.setEchoMode(QLineEdit.EchoMode.Password)
-        db_password.setPlaceholderText("仅在本次只读核验内存中使用")
+        db_password.setPlaceholderText("只在本次连接内存使用；写入阶段需独立授权账号")
         form.addRow("数据库密码", db_password)
         operation = QComboBox()
         for title, step in (
@@ -1968,6 +1976,7 @@ class MainWindow(QMainWindow):
             ("5. 创建新 GeoTIFF / ImageMosaic", "publish_raster"),
             ("6. 发布已有 SHP / 单 GeoTIFF 任务", "publish_plan"),
             ("7. 业务数据库表与父节点只读核验", "db_doctor"),
+            ("8. 登记审核后的数据库父子节点（需再次确认）", "db_register"),
         ):
             operation.addItem(title, step)
         form.addRow("执行阶段", operation)
@@ -1975,7 +1984,7 @@ class MainWindow(QMainWindow):
             selected = operation.currentData()
             raster = selected in {"geoserver_doctor", "publish_raster"}
             geo = raster or selected == "publish_plan"
-            db_only = selected == "db_doctor"
+            db_only = selected in {"db_doctor", "db_register"}
             ssh_mode = mode.currentData() == "ssh"
             visible = {
                 "服务器内网 IP": ssh_mode,
@@ -1994,8 +2003,9 @@ class MainWindow(QMainWindow):
                 "GeoServer REST 密码": geo,
                 "PostgreSQL 本机端口": db_only,
                 "待核查业务目录 JSON": db_only,
+                "最近只读核验报告": selected == "db_register",
                 "业务数据库名": db_only,
-                "数据库只读用户名": db_only,
+                "数据库用户名": db_only,
                 "数据库密码": db_only,
             }
             for index in range(form.rowCount()):
@@ -2005,11 +2015,12 @@ class MainWindow(QMainWindow):
                     if label_text in visible:
                         form.setRowVisible(index, visible[label_text])
             note.setText(
-                "206 业务数据库只读模式：通过 SSH 隧道读取指定表结构、父节点和服务冲突，"
-                "不会 INSERT/UPDATE/DELETE，也不会自动批准 schema_verified。"
-                if db_only else
-                "每阶段独立确认，SSH 主机指纹必须先核验；"
-                "GeoServer 写入前需要二次确认，数据库 SQL 始终单独审核。"
+                ("业务数据库登记：仅执行程序生成的已审核 SQL，先重新只读核验，"
+                 "再经逐项确认和唯一短语授权后写库、回查；不自动重试。")
+                if selected == "db_register" else
+                ("206 业务数据库只读核验：检查指定表结构、父节点和服务冲突；绝不修改数据。")
+                if selected == "db_doctor" else
+                "每阶段独立确认，SSH 主机指纹必须先核验；其他操作不会自动登记数据库。"
             )
         operation.currentIndexChanged.connect(refresh_fields)
         mode.currentIndexChanged.connect(refresh_fields)
@@ -2058,6 +2069,7 @@ class MainWindow(QMainWindow):
             "geoserver_user": gs_user.text().strip(),
             "geoserver_password": gs_password.text(),
             "catalog_file": catalog_file.text().strip(),
+            "database_evidence": db_evidence.text().strip(),
             "database": db_name.text().strip(),
             "database_user": db_user.text().strip(),
             "database_password": db_password.text(),
@@ -2077,12 +2089,44 @@ class MainWindow(QMainWindow):
         if needs_tar and not settings["archive"]:
             QMessageBox.warning(self, "缺少归档", "请先选择本机受控的 .tar 发布包。")
             return
-        if action == "db_doctor" and not all(settings.get(key) for key in (
+        if action in {"db_doctor", "db_register"} and not all(settings.get(key) for key in (
             "catalog_file", "database", "database_user", "database_password"
         )):
-            QMessageBox.warning(self, "缺少数据库只读核验信息",
-                                "请填写业务目录 JSON、数据库名、只读账号与本次密码。")
+            QMessageBox.warning(self, "缺少数据库连接信息",
+                                "请填写业务目录 JSON、数据库名、授权账号与本次密码。")
             return
+        if action == "db_register":
+            if not settings["database_evidence"]:
+                QMessageBox.warning(self, "缺少数据库核验报告", "请先完成只读核验，选择对应的 JSON 报告。")
+                return
+            from .catalog_live import review_mapping
+            from .catalog_register import registration_phrase
+
+            try:
+                _, profile, digest = review_mapping(settings["catalog_file"])
+                phrase = registration_phrase(settings["database"], digest)
+            except (ValueError, OSError) as exc:
+                QMessageBox.warning(self, "登记前检查未通过", str(exc))
+                return
+            reply = QMessageBox.question(
+                self, "确认真实业务数据库登记",
+                f"服务器：{target.safe_info()['host']}\n数据库：{settings['database']}\n"
+                f"Schema：{profile['target_schema']}\n新增父节点：{len(profile['groups'])}\n"
+                f"图幅子节点：{len(profile['layers'])}\n\n"
+                "只有分类、WMS 样式、表结构和只读核验均通过才会尝试写库。"
+                "发生超时或回查失败时必须人工核对，禁止直接重试。\n\n"
+                "确定要进入最终授权吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            typed, ok = QInputDialog.getText(
+                self, "最后确认数据库写入", f"完整输入 {phrase} 以授权真实业务库登记："
+            )
+            if not ok or typed.strip() != phrase:
+                return
+            settings["catalog_confirmation"] = phrase
         if action in {"geoserver_doctor", "publish_raster", "publish_plan"}:
             if not settings["geoserver_user"] or not settings["geoserver_password"]:
                 QMessageBox.warning(self, "缺少 GeoServer 凭据", "请填写 REST 用户及本次使用的密码。")
@@ -2138,6 +2182,16 @@ class MainWindow(QMainWindow):
             ) as session:
                 if action == "doctor":
                     return preflight(target, session)
+                if action == "db_register":
+                    from .catalog_register import register_catalog
+
+                    destination = self._work_dir / ("business-db-register-" + uuid.uuid4().hex[:12])
+                    return register_catalog(
+                        target, session, settings["catalog_file"], settings["database_evidence"],
+                        database=settings["database"], username=settings["database_user"],
+                        password=settings["database_password"], output=destination,
+                        confirmation=settings["catalog_confirmation"],
+                    )
                 if action == "db_doctor":
                     from .catalog_live import probe_catalog
 
@@ -2203,8 +2257,11 @@ class MainWindow(QMainWindow):
             "MANUAL_ACTION_REQUIRED": "服务器写入结果尚不确定；必须核对再继续",
             "READ_ONLY_EVIDENCE_READY_NOT_APPROVED": "业务数据库只读核验无阻断；仍需人工审批并生成 SQL",
             "BLOCKED_PENDING_HUMAN_REVIEW": "数据库发现字段、目录或服务冲突，已生成本机审查报告",
+            "VERIFIED_REGISTERED": "已获授权登记业务数据库，全部节点与服务已完成只读回查",
         }.get(status, status)
-        self.activity.setText(label + "；业务数据库 SQL 仍需单独审核执行。")
+        self.activity.setText(
+            label if status == "VERIFIED_REGISTERED" else label + "；业务数据库登记尚未确认。"
+        )
         evidence_path = result.get("audit_directory") or result.get("report_path") or result.get("review")
         extra = f"\n本机审计记录：{evidence_path}" if evidence_path else ""
         reasons = result.get("blocking_reasons", [])
@@ -2223,7 +2280,9 @@ class MainWindow(QMainWindow):
             label + "\n\n目标：" + str(result.get("target", {}).get("host", "本机 Linux"))
             + "\n目录：" + str(result.get("remote_directory", "尚未解包"))
             + extra
-            + "\n\n本工具不会自动执行 206 SQL；请以只读核验、真实 WMS 和人工审核结论为准。",
+            + ("\n\n已登记并回查；请继续核对业务系统页面的实际显示。"
+               if status == "VERIFIED_REGISTERED"
+               else "\n\n仅在明确确认后允许写库；请以只读核验及真实 WMS 为准。"),
         )
 
     def _export_business_tree(self, source: Path | str | None = None) -> None:

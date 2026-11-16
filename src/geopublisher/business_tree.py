@@ -230,9 +230,14 @@ def _guard(text: list[str]) -> str:
 
 
 def _where_eq(columns: dict, constraints: dict) -> str:
+    # The generated row contains optional memo/organization even when the
+    # reviewed business table has no such columns.
+    selected = [(logical, val) for logical, val in constraints.items() if logical in columns]
+    if not selected:
+        _reject("EMPTY_TREE_CONDITION", "目录校验缺少可映射的业务字段。")
     return " AND ".join(
         _identifier(columns[logical]) + " IS NOT DISTINCT FROM " + _literal(val)
-        for logical, val in constraints.items()
+        for logical, val in selected
     )
 
 

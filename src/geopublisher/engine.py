@@ -236,6 +236,48 @@ class Publisher:
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise Cancelled("已在安全检查点取消；已完成的服务保留，可再次打开任务恢复。")
 
+    def preflight_fresh_batch(self) -> None:
+        """Read every target before the first write, not halfway through a batch.
+
+        Existing tasks use their journal ownership/recovery checks instead.
+        The skip strategy deliberately retains its per-layer skip behavior.
+        Neither this check nor GeoServer REST provides an atomic remote lock:
+        external writers still require an exclusive publication window.
+        """
+        if self.plan["strategy"] == "skip" or len(self.plan["resources"]) < 2:
+            # Keep established single-layer conflict/ownership behavior unchanged.
+            return
+        if any(
+            self.journal.objects(self.task_id, r["resource_id"])
+            or self.journal.operations(self.task_id, r["resource_id"])
+            for r in self.plan["resources"]
+        ):
+            self.event("BATCH_RESUME_CHECK", "检测到已有任务记录，逐图层核对本任务所有权。")
+            return
+        conflicts = []
+        for resource in self.plan["resources"]:
+            self.checkpoint()
+            workspace = self.workspace
+            store = resource["store_name"]
+            layer = resource["target_name"]
+            style = resource["style_name"]
+            if self.client.get_store(workspace, store, resource["kind"]) is not None:
+                conflicts.append("数据存储")
+            if self.client.get_layer(workspace, layer) is not None:
+                conflicts.append("图层")
+            if self.client.get_style(workspace, style) is not None:
+                conflicts.append("样式")
+        if conflicts:
+            raise ConfigError(
+                "BATCH_RESOURCE_CONFLICT",
+                f"发现 {len(conflicts)} 个目标名称已被占用，整批尚未上传。"
+                "请调整命名或核对现有图层，避免产生部分成功。",
+            )
+        self.event(
+            "BATCH_PREFLIGHT_PASSED",
+            f"{len(self.plan['resources'])} 个图层的服务器名称冲突检查已通过；即将自动上传服务器副本。",
+        )
+
     def current(self, resource: dict, kind: str):
         workspace, store, layer = self.workspace, resource["store_name"], resource["target_name"]
         if kind == "store":
@@ -541,6 +583,16 @@ class Publisher:
             "report_path": str(report_path),
             "catalog_status": "NOT_REGISTERED",
             "catalog_message": "仅导出图层绑定清单。配置经核验的目录字段映射后，可单独生成 SQL；尚未写入业务数据库。",
+            "data_transfer": (
+                "VERIFIED_SERVER_PATH" if self.staged_paths else "AUTOMATIC_GEOSERVER_REST_UPLOAD"
+            ),
+            "server_storage": (
+                "EXISTING_SERVER_FILES" if self.staged_paths else "GEOSERVER_MANAGED_DATA_DIR"
+            ),
+            "storage_note": (
+                "文件位于 GeoServer 服务器，不依赖 Windows 客户端保持连接。"
+                "仍需由服务器管理员确认 GeoServer DATA_DIR 持久化及备份策略。"
+            ),
             "recovery": "恢复先核对任务所有权和对象指纹；未知结果或外部变化转人工处理。源数据与既有服务不做原位替换。",
         }
         save_json(output / "report.json", report)
@@ -666,6 +718,7 @@ def run_plan(
                     raise ConfigError(
                         "WORKSPACE_REQUIRED", "目标工作空间不存在。请先由管理员创建，再运行本任务。"
                     )
+                publisher.preflight_fresh_batch()
                 for resource in plan["resources"]:
                     try:
                         results.append(publisher.publish(resource))

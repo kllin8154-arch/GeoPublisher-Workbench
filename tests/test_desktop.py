@@ -138,6 +138,46 @@ def test_profile_export_never_contains_session_credentials(window, tmp_path):
     assert Environment.load(target).environment_key == "local-test"
 
 
+def test_automatic_delivery_ui_is_clear_without_manual_sftp(window):
+    plan = sample_plan(window)
+    plan["resources"][0]["kind"] = "shapefile"
+    window.review_plan(plan)
+    assert "无需手动压缩" in window.delivery_mode_note.text()
+    assert "GeoServer" in window.delivery_mode_note.text()
+    assert window.execute_button.text() == "确认并自动发布"
+
+
+def test_last_saved_environment_is_restored_without_credentials(app, tmp_path):
+    work = tmp_path / "desktop-work"
+    profile = tmp_path / "site-profile.json"
+    first = MainWindow(work_dir=work)
+    first.apply_environment(
+        Environment(
+            "site208",
+            "https://geoserver.example.invalid/geoserver",
+            "onsite_maps",
+            str(tmp_path / "gdal"),
+        )
+    )
+    first.session_username.setText("do-not-save-user")
+    first.session_password.setText("do-not-save-password")
+    first.save_environment(profile)
+    first._remember_environment_file(profile)
+    first.close()
+    app.processEvents()
+
+    restored = MainWindow(work_dir=work)
+    assert restored.base_url.text() == "https://geoserver.example.invalid/geoserver"
+    assert restored.workspace.text() == "onsite_maps"
+    assert restored.session_username.text() == ""
+    assert restored.session_password.text() == ""
+    preferences = (work / "ui-preferences.ini").read_text(encoding="utf-8")
+    assert "do-not-save" not in preferences
+    assert "do-not-save" not in profile.read_text(encoding="utf-8")
+    restored.close()
+    app.processEvents()
+
+
 def test_multiple_tiffs_can_be_selected_without_implicitly_confirming_publication(window, tmp_path):
     files = [tmp_path / "a.tif", tmp_path / "b.tiff", tmp_path / "c.qml"]
     for path in files:

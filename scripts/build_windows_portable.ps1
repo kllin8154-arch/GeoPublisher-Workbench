@@ -64,7 +64,7 @@ $share = Join-Path $runtime 'Library\share'
 $exe = Join-Path $application 'GeoPublisher-Workbench.exe'
 if (-not (Test-Path (Join-Path $share 'proj\proj.db')) -or -not (Test-Path (Join-Path $share 'gdal'))) { throw 'Incomplete GDAL/PROJ data directory' }
 Copy-Item -LiteralPath $offlineShortcut -Destination (Join-Path $application 'Install-Offline-Shortcut.cmd') -ErrorAction Stop
-foreach ($guide in @('QUICKSTART-ZH.md', 'FIELD-SHEET-SPLIT-P0B.md', 'SHEET-REVIEW-P0B.md', 'SHEET-BOUNDARY-P0C.md', 'SERVER-SHP-PERSISTENCE.md')) {
+foreach ($guide in @('QUICKSTART-ZH.md', 'FIELD-SHEET-SPLIT-P0B.md', 'SHEET-REVIEW-P0B.md', 'SHEET-BOUNDARY-P0C.md', 'SERVER-SHP-PERSISTENCE.md', 'AUTO-REST-PUBLISH-ZH.md')) {
     Copy-Item -LiteralPath (Join-Path $repo ('docs\' + $guide)) -Destination (Join-Path $application $guide) -ErrorAction Stop
 }
 $oldPath = $env:PATH
@@ -131,6 +131,7 @@ $manifest = [ordered]@{
         offline_guide_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'FIELD-SHEET-SPLIT-P0B.md') -Algorithm SHA256).Hash
         offline_boundary_guide_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'SHEET-BOUNDARY-P0C.md') -Algorithm SHA256).Hash
         offline_server_guide_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'SERVER-SHP-PERSISTENCE.md') -Algorithm SHA256).Hash
+        offline_auto_rest_guide_sha256 = (Get-FileHash -LiteralPath (Join-Path $application 'AUTO-REST-PUBLISH-ZH.md') -Algorithm SHA256).Hash
     }
     third_party_count = $packages.Count
 }
@@ -158,7 +159,8 @@ foreach ($check in @(
     @('Install-Offline-Shortcut.cmd', $finalManifest.checksums.offline_shortcut_sha256),
     @('FIELD-SHEET-SPLIT-P0B.md', $finalManifest.checksums.offline_guide_sha256),
     @('SHEET-BOUNDARY-P0C.md', $finalManifest.checksums.offline_boundary_guide_sha256),
-    @('SERVER-SHP-PERSISTENCE.md', $finalManifest.checksums.offline_server_guide_sha256)
+    @('SERVER-SHP-PERSISTENCE.md', $finalManifest.checksums.offline_server_guide_sha256),
+    @('AUTO-REST-PUBLISH-ZH.md', $finalManifest.checksums.offline_auto_rest_guide_sha256)
 )) {
     if ((Get-FileHash -LiteralPath (Join-Path $final $check[0]) -Algorithm SHA256).Hash -ne $check[1]) {
         throw "Portable finalization checksum mismatch: $($check[0])"

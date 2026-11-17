@@ -252,3 +252,80 @@ def test_database_conflicts_surface_as_warning_with_report_path(window, monkeypa
     assert len(warning) == 1
     assert "database.json" in warning[0][1]
     assert "Proposed node code already exists" in warning[0][1]
+
+
+def test_prepare_vector_release_button_stays_in_more_tools(window, qapp):
+    window.show()
+    qapp.processEvents()
+    assert window.vector_bundle_button.text() == "准备服务器 SHP 数据包"
+    assert not window.vector_bundle_button.isVisible()
+    window.more_tools_button.setChecked(True)
+    qapp.processEvents()
+    assert window.vector_bundle_button.isVisible()
+    assert window.vector_bundle_button.sizeHint().height() >= 34
+
+
+def test_prepare_vector_bundle_only_creates_local_archive(window, qapp, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    import geopublisher.server_vector as server_vector
+
+    seen = []
+    monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                        lambda *_a: ("D:/synthetic/plan.json", ""))
+    monkeypatch.setattr(server_vector, "bundle_vector_plan", lambda plan, output: (
+        seen.append((str(plan), str(output))),
+        {"status": "LOCAL_VECTOR_RELEASE_READY", "resources": 2,
+         "archive": "D:/synthetic/release.tar",
+         "release_manifest": "D:/synthetic/vector-release.json",
+         "sha256": "f" * 64},
+    )[1])
+    dialogs = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *_a: dialogs.append(True))
+    window._prepare_server_shp_bundle()
+    _wait(qapp, window)
+    assert len(seen) == 1
+    assert seen[0][0] == "D:\\synthetic\\plan.json" or seen[0][0] == "D:/synthetic/plan.json"
+    assert len(dialogs) == 1
+    assert "尚未" not in window.activity.text()
+    assert "2 个图层" in window.activity.text()
+
+
+def test_staged_shp_gui_requires_verification_before_geo_rest(window, qapp, monkeypatch):
+    import geopublisher.server_deploy as deploy
+    import geopublisher.server_plan as plan_module
+    import geopublisher.server_vector as vector
+
+    settings = _settings(
+        "publish_staged_vector",
+        archive="D:/synthetic/release.tar", plan_file="D:/synthetic/plan.json",
+        manifest="D:/synthetic/vector-release.json",
+        geoserver_user="synthetic", geoserver_password="never-write",
+    )
+    monkeypatch.setattr(window, "_server_deploy_dialog", lambda: settings)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        QInputDialog, "getText", lambda *_a: ("PUBLISH_STAGED_SHP", True),
+    )
+    monkeypatch.setattr(deploy.ReleaseArchive, "inspect", lambda _x: object())
+    monkeypatch.setattr(deploy, "open_target", _fake_session)
+    plan = {"task_id": "test", "environment": {"workspace": "test"}}
+    monkeypatch.setattr(plan_module, "validate_server_binding", lambda *_a: None)
+    monkeypatch.setattr("geopublisher.plans.load_plan", lambda *_a: plan)
+    calls = []
+    def verified(*_args):
+        calls.append("verify-file-hashes")
+        return {"r0001": "/srv/geopublisher/synthetic/data/r0001/test.shp"}
+    monkeypatch.setattr(vector, "verify_vector_release", verified)
+    def fake_publish(*_args, **kwargs):
+        calls.append("rest-publish")
+        assert kwargs["staged_paths"]["r0001"].startswith("/srv/")
+        assert kwargs["password"] == "never-write"
+        return {"status": "REVIEW_REQUIRED"}
+    monkeypatch.setattr(plan_module, "publish_plan_via_tunnel", fake_publish)
+    monkeypatch.setattr(QMessageBox, "information", lambda *_a: None)
+    window._server_deploy()
+    _wait(qapp, window)
+    assert calls == ["verify-file-hashes", "rest-publish"]

@@ -419,6 +419,11 @@ class MainWindow(QMainWindow):
             "仅检查已拆分 SHP 是否被人工提供的图框面完整覆盖。"
             "不会修改、裁剪或发布数据，也不会写数据库。"
         )
+        self.vector_bundle_button = QPushButton("准备服务器 SHP 数据包")
+        self.vector_bundle_button.setToolTip(
+            "使用审核通过的本机发布计划，生成带 SHA256 的 Linux 数据包。"
+            "之后可用 Xftp/SFTP 传到 208，再从服务器文件注册 GeoServer。"
+        )
         self.server_deploy_button = QPushButton("Linux 服务器部署")
         self.server_cancel_button = QPushButton("取消当前 SFTP 传输")
         self.server_cancel_button.hide()
@@ -446,8 +451,9 @@ class MainWindow(QMainWindow):
         for index, widget in enumerate((
             self.history_button, self.business_tree_button, self.server_deploy_button,
             self.help_button, self.folder_button, self.boundary_check_button,
+            self.vector_bundle_button,
         )):
-            tools_grid.addWidget(widget, index // 3, index % 3)
+            tools_grid.addWidget(widget, index // 4, index % 4)
         self.tools_panel.hide()
         self.more_tools_button.toggled.connect(self.tools_panel.setVisible)
         box.addWidget(self.tools_panel)
@@ -458,10 +464,11 @@ class MainWindow(QMainWindow):
         self.business_tree_button.clicked.connect(lambda: self._export_business_tree())
         self.boundary_check_button.clicked.connect(self._choose_boundary_check)
         self.server_deploy_button.clicked.connect(self._server_deploy)
+        self.vector_bundle_button.clicked.connect(self._prepare_server_shp_bundle)
         self.help_button.clicked.connect(self._show_quick_help)
         self._editable.extend((
             self.business_tree_button, self.boundary_check_button,
-            self.server_deploy_button, self.help_button,
+            self.server_deploy_button, self.vector_bundle_button, self.help_button,
         ))
         self.history = QListWidget()
         self.history.setMaximumHeight(130)
@@ -2282,6 +2289,52 @@ class MainWindow(QMainWindow):
         self.report_button.setEnabled(False)
         self.result_guidance.setText("完成后在这里显示下一步操作建议。")
 
+    def _prepare_server_shp_bundle(self) -> None:
+        """Package plan-verified SHPs for explicit Xftp/SFTP server staging."""
+        if self._thread is not None:
+            QMessageBox.warning(self, "已有任务运行", "请先完成当前任务再生成服务器数据包。")
+            return
+        if self._plan:
+            plan_file = Path(self._plan["output_dir"]) / "plan.json"
+        else:
+            selected, _ = QFileDialog.getOpenFileName(
+                self, "选择完成预检的 SHP 发布计划 plan.json",
+                str(self._work_dir), "发布计划 (*.json)",
+            )
+            if not selected:
+                return
+            plan_file = Path(selected)
+        from .server_vector import bundle_vector_plan
+
+        output = self._work_dir / (
+            "server-shp-release-" + datetime.now().strftime("%Y%m%d-%H%M%S-")
+            + uuid.uuid4().hex[:8]
+        )
+        self.activity.setText(
+            "正在制作服务器 SHP 数据包：仅在 D 盘生成 tar、清单和 SHA256，尚未传到 208。"
+        )
+        self._start_worker(
+            lambda _event: bundle_vector_plan(plan_file, output),
+            self._server_shp_bundle_done,
+        )
+
+    def _server_shp_bundle_done(self, result: dict) -> None:
+        self.activity.setText(
+            f"服务器 SHP 数据包已在本机完成：{result['resources']} 个图层。"
+            "接下来在 Linux 服务器部署里执行上传和校验。"
+        )
+        QMessageBox.information(
+            self, "服务器 SHP 数据包准备完成",
+            f"图层数量：{result['resources']}\n"
+            f"tar：{result['archive']}\n"
+            f"映射清单：{result['release_manifest']}\n"
+            f"SHA256：{result['sha256']}\n\n"
+            "下一步：通过 Linux 服务器部署的 SFTP 上传和校验，再解包；"
+            "也可以用 Xftp 8 把 tar 上传到对应发布根目录。\n"
+            "确认服务器文件可读、路径匹配后，选择「已上传 SHP：从 Linux 文件路径发布」。"
+            "未经确认不会创建 GeoServer 图层或数据库节点。",
+        )
+
     def _server_deploy_dialog(self) -> dict | None:
         """Collect one explicit Linux delivery operation, without saving credentials."""
         from .server_deploy import LinuxTarget
@@ -2359,7 +2412,7 @@ class MainWindow(QMainWindow):
             )[0] or archive.text())
         ))
         manifest = QLineEdit()
-        manifest.setPlaceholderText("创建 GeoServer 图层前必须核验的栅格映射 .json")
+        manifest.setPlaceholderText("栅格映射 JSON，或 SHP 包的 vector-release.json")
         form.addRow("GeoServer 发布清单", dialog_path_row(
             manifest, lambda: manifest.setText(QFileDialog.getOpenFileName(
                 dialog, "选择 GeoServer 栅格发布清单 JSON", str(self._work_dir), "JSON (*.json)"
@@ -2415,9 +2468,10 @@ class MainWindow(QMainWindow):
             ("3. 核验并解包", "extract"),
             ("4. GeoServer 只读预检", "geoserver_doctor"),
             ("5. 创建新 GeoTIFF / ImageMosaic", "publish_raster"),
-            ("6. 发布已有 SHP / 单 GeoTIFF 任务", "publish_plan"),
-            ("7. 业务数据库表与父节点只读核验", "db_doctor"),
-            ("8. 登记审核后的数据库父子节点（需再次确认）", "db_register"),
+            ("6. 发布已有 SHP / 单 GeoTIFF 任务（REST 上传）", "publish_plan"),
+            ("7. 已上传 SHP：从 Linux 文件路径发布", "publish_staged_vector"),
+            ("8. 业务数据库表与父节点只读核验", "db_doctor"),
+            ("9. 登记审核后的数据库父子节点（需再次确认）", "db_register"),
         ):
             operation.addItem(title, step)
         form.addRow("执行阶段", operation)
@@ -2526,7 +2580,9 @@ class MainWindow(QMainWindow):
             return
         action = settings["operation"]
         target = settings["target"]
-        needs_tar = action in {"stage", "extract", "geoserver_doctor", "publish_raster"}
+        needs_tar = action in {
+            "stage", "extract", "geoserver_doctor", "publish_raster", "publish_staged_vector",
+        }
         if needs_tar and not settings["archive"]:
             QMessageBox.warning(self, "缺少归档", "请先选择本机受控的 .tar 发布包。")
             return
@@ -2568,25 +2624,30 @@ class MainWindow(QMainWindow):
             if not ok or typed.strip() != phrase:
                 return
             settings["catalog_confirmation"] = phrase
-        if action in {"geoserver_doctor", "publish_raster", "publish_plan"}:
+        if action in {"geoserver_doctor", "publish_raster", "publish_plan", "publish_staged_vector"}:
             if not settings["geoserver_user"] or not settings["geoserver_password"]:
                 QMessageBox.warning(self, "缺少 GeoServer 凭据", "请填写 REST 用户及本次使用的密码。")
                 return
             if action in {"geoserver_doctor", "publish_raster"} and not settings["manifest"]:
                 QMessageBox.warning(self, "缺少栅格发布清单", "请提供已审核的 JSON 清单。")
                 return
-            if action == "publish_plan" and not settings["plan_file"]:
+            if action in {"publish_plan", "publish_staged_vector"} and not settings["plan_file"]:
                 QMessageBox.warning(self, "缺少发布任务", "请选择原有的 plan.json。")
                 return
-        if action in {"stage", "extract", "publish_raster", "publish_plan"}:
+            if action == "publish_staged_vector" and not settings["manifest"]:
+                QMessageBox.warning(self, "缺少服务器 SHP 清单", "请选择数据包目录里的 vector-release.json。")
+                return
+        if action in {"stage", "extract", "publish_raster", "publish_plan", "publish_staged_vector"}:
             labels = {
                 "stage": "SFTP 上传并校验（不解包）",
                 "extract": "将已校验归档解包到全新 Linux 目录",
                 "publish_raster": "创建 GeoServer 新 GeoTIFF / ImageMosaic 图层",
-                "publish_plan": "执行本地不可变 SHP / 单 GeoTIFF 发布任务",
+                "publish_plan": "通过 REST 上传 SHP/TIFF 到 GeoServer 并发布",
+                "publish_staged_vector": "从 Linux 已验签 SHP 文件路径创建 GeoServer 图层",
             }
-            is_write = action in {"publish_raster", "publish_plan"}
-            source = settings["plan_file"] if action == "publish_plan" else settings["archive"]
+            is_write = action in {"publish_raster", "publish_plan", "publish_staged_vector"}
+            source = (settings["plan_file"]
+                      if action in {"publish_plan", "publish_staged_vector"} else settings["archive"])
             reply = QMessageBox.question(
                 self, "确认 Linux 服务器操作",
                 f"操作：{labels[action]}\n目标：{target.safe_info()['host']}\n"
@@ -2599,7 +2660,11 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
             if is_write:
-                required = "PUBLISH_PLAN_SSH" if action == "publish_plan" else "PUBLISH_GEOSERVER"
+                required = (
+                    "PUBLISH_STAGED_SHP" if action == "publish_staged_vector"
+                    else "PUBLISH_PLAN_SSH" if action == "publish_plan"
+                    else "PUBLISH_GEOSERVER"
+                )
                 confirm, ok = QInputDialog.getText(
                     self, "再次确认 GeoServer 写入",
                     f"请完整输入 {required} 以确认新图层的创建：",
@@ -2616,7 +2681,7 @@ class MainWindow(QMainWindow):
 
         def perform(emit):
             package = ReleaseArchive.inspect(settings["archive"]) if action in {
-                "stage", "extract", "geoserver_doctor", "publish_raster"
+                "stage", "extract", "geoserver_doctor", "publish_raster", "publish_staged_vector"
             } else None
             with open_target(
                 target, password=settings["password"], passphrase=settings["passphrase"],
@@ -2641,6 +2706,24 @@ class MainWindow(QMainWindow):
                         target, session, settings["catalog_file"],
                         database=settings["database"], username=settings["database_user"],
                         password=settings["database_password"], output=destination,
+                    )
+                if action == "publish_staged_vector":
+                    from .plans import load_plan
+                    from .server_plan import publish_plan_via_tunnel, validate_server_binding
+                    from .server_vector import verify_vector_release
+
+                    plan = load_plan(settings["plan_file"])
+                    validate_server_binding(plan, target)
+                    server_paths = verify_vector_release(
+                        settings["plan_file"], settings["archive"],
+                        settings["manifest"], target, session,
+                    )
+                    return publish_plan_via_tunnel(
+                        target, settings["plan_file"], session,
+                        username=settings["geoserver_user"],
+                        password=settings["geoserver_password"],
+                        staged_paths=server_paths,
+                        on_event=emit, cancel_event=self._cancel,
                     )
                 if action == "publish_plan":
                     from .server_plan import publish_plan_via_tunnel
@@ -2690,7 +2773,7 @@ class MainWindow(QMainWindow):
         label = {
             "READ_ONLY_PREFLIGHT_OK": "SSH/Linux 环境只读预检通过",
             "STAGED_VERIFIED_NOT_EXTRACTED": "发布包已传输并完成服务器 SHA256 校验",
-            "EXTRACTED_CHECKSUMS_OK_NOT_PUBLISHED": "服务器已解包并校验 TIFF 清单",
+            "EXTRACTED_CHECKSUMS_OK_NOT_PUBLISHED": "服务器已解包并核验数据组件 SHA256",
             "GEOSERVER_READONLY_PREFLIGHT": "GeoServer 版本、工作空间、图层名称已完成只读核查",
             "PUBLISHED_NEEDS_HUMAN_WMS_REVIEW": "新 GeoServer 图层已创建并生成 WMS 图片；需人工验收",
             "SUCCEEDED": "发布任务返回成功；请检查图层与前端效果",

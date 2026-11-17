@@ -4,7 +4,7 @@
 
 **第一次使用？** 桌面入口已简化为「选择整个 GDB / 选择 MXD 地图 / 添加 SHP-TIFF → 检查图幅 → 确认发布」。高级参数、业务目录 SQL 和服务器部署默认收起到「更多工具」；转换完成后自动选入通过本地清单验证的 SHP，仍须确认 GeoServer 发布并人工验收 WMS。参见 [三步上手指南](docs/QUICKSTART-ZH.md)、[GDB/MXD 离线转换指南](docs/IMPORT-GDB-MXD-LYR.md)和 [离线主机/服务器部署](docs/OFFLINE-OPERATOR.md)。
 
-**服务器持久数据发布：** 普通 SHP 发布时 REST `file.shp` 已经把数据复制到 GeoServer 服务器，关闭本机不会让地图依赖 Windows 文件路径。对需要独立服务器备份与整批管理的数据，新增 **SFTP/Xftp 8 → 服务器 SHA256 解包 → GeoServer `external.shp`** 的可选流程；使用同一不可变计划、SLD 与 WMS 审计引擎。见 [服务器 SHP 持久化发布](docs/SERVER-SHP-PERSISTENCE.md)。
+**自动服务器上传是默认流程，无需 Xftp/Xshell：** GDB/MXD 本地转为 SHP 并核验后，点击「下一步：检查图幅 → 确认并自动发布」，工作台自动打包并通过 REST file.shp 上传到 **GeoServer 服务器的数据目录**，完成整批冲突预检、图层/SLD 注册、WMS 验收、任务报告。关闭本机不会让地图依赖 Windows 文件路径；服务器 GEOSERVER_DATA_DIR 仍须落实持久磁盘与备份。只有指定独立物理目录才使用 **SFTP/Xftp → GeoServer external.shp** 高级备用流程。HTTP 管理凭据无 TLS 保护，推荐 HTTPS；若用内网 HTTP，必须明确授权。见 [一键自动发布说明](docs/AUTO-REST-PUBLISH-ZH.md)及 [服务器 SHP 持久化发布](docs/SERVER-SHP-PERSISTENCE.md)。
 
 **P0-C：新增真实图幅空间边界只读核验。** 发布前可从桌面「更多工具 → 图幅空间边界核验」选择已签名分幅成果和真实标准图幅 Polygon SHP，按人工选择的图幅编号字段使用 GDAL/GEOS `ST_Covers` 检查每个实际几何。越界或图号缺失拒绝“通过”，本地输出不含完整几何的审核 JSON；不裁剪、不联网、不写 GeoServer/数据库。详见 [P0-C 离线图幅边界指南](docs/SHEET-BOUNDARY-P0C.md)。另外增加可在 Ubuntu 24.04 可信构建机上生成 **离线 Linux CLI wheelhouse** 的脚本与 CI 验收；目标 Linux 仍需预装 Python 3.12、GDAL/PROJ。
 

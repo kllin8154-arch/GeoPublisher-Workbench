@@ -4,6 +4,14 @@
 
 **目前为内部开发预览**：未经授权不要连接生产 GeoServer；真实项目空间数据不得上传互联网或远程服务器，只在许可的本地/隔离环境处理。
 
+## 默认自动上传，不需要 Xftp/Xshell
+
+目前常规的「确认并自动发布」已经直接调用 GeoServer REST 的 file.shp / file.geotiff 上传：工作台从本机生成经哈希验证的 SHP ZIP 副本后，自动传到 **GeoServer 服务器自身的数据目录**，再逐图层创建存储、样式和 WMS/WFS 验收。**不是 Windows 客户端文件映射，客户端下线后由服务器提供地图。**
+
+整个流程：**选择 GDB/MXD/SHP → 下一步：检查图幅 → 确认并自动发布**。只有指定服务器独立存储路径等高级需求才使用 Xftp / Xshell。详情见 [自动 REST 上传与安全条件](AUTO-REST-PUBLISH-ZH.md)。
+
+首次连接需要 GeoServer 地址、已存在的 Workspace 和本次管理员凭据。不需要 SSH root 账号。非本机 HTTP 无 TLS 加密，必须在可信隔离内网经用户显式允许；推荐使用 HTTPS。服务器 GeoServer DATA_DIR 的持久化和备份需要运维确认；与业务数据库父子节点登记仍是独立步骤。
+
 ## 第一次使用：先配置服务器
 
 在 Windows 桌面双击 **GeoPublisher Workbench**，点击左侧 **环境设置**。

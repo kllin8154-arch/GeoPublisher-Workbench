@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._building_forms = False
         self._apply_theme()
+        self._restore_last_environment()
         hints = QApplication.instance().styleHints()
         hints.colorSchemeChanged.connect(lambda _scheme: self._apply_theme())
         self._refresh_history()
@@ -421,15 +422,18 @@ class MainWindow(QMainWindow):
         )
         self.vector_bundle_button = QPushButton("准备服务器 SHP 数据包")
         self.vector_bundle_button.setToolTip(
-            "使用审核通过的本机发布计划，生成带 SHA256 的 Linux 数据包。"
-            "之后可用 Xftp/SFTP 传到 208，再从服务器文件注册 GeoServer。"
+            "高级备用：仅需指定服务器独立文件目录时使用。"
+            "常规发布会自动将 SHP/GeoTIFF 上传至 GeoServer 的服务器数据目录，无需 Xftp/Xshell。"
         )
         self.server_deploy_button = QPushButton("Linux 服务器部署")
         self.server_cancel_button = QPushButton("取消当前 SFTP 传输")
         self.server_cancel_button.hide()
         self.server_cancel_button.setEnabled(False)
         self.server_cancel_button.clicked.connect(lambda: self._cancel.set())
-        self.server_deploy_button.setToolTip("SSH/SFTP 连接与 Linux 本机分阶段交付；不自动修改 GeoServer 或业务数据库。")
+        self.server_deploy_button.setToolTip(
+            "仅供高级运维使用：SSH/SFTP 服务器预置文件发布。"
+            "常规任务可直接点击「确认并自动发布」，不用配置 Linux SSH。"
+        )
         self.business_tree_button.setToolTip("选择发布任务 plan.json 自动整理待分类图幅；或选择业务目录 JSON 生成审核 SQL。")
         self.help_button = QPushButton("使用帮助")
         self.folder_button.setEnabled(False)
@@ -665,6 +669,14 @@ class MainWindow(QMainWindow):
         self.review_guidance.setTextFormat(Qt.TextFormat.PlainText)
         self.review_guidance.setWordWrap(True)
         box.addWidget(self.review_guidance)
+        self.delivery_mode_note = QLabel(
+            "自动发布（默认）：本机完成 SHP 压缩副本后由 GeoServer REST 自动接收，"
+            "存放在服务器自身的数据目录。无需 Xftp、Xshell 或手动运行上传命令。"
+        )
+        self.delivery_mode_note.setTextFormat(Qt.TextFormat.PlainText)
+        self.delivery_mode_note.setWordWrap(True)
+        self.delivery_mode_note.setObjectName("muted")
+        box.addWidget(self.delivery_mode_note)
         self.resources_table = QTableWidget(0, 4)
         self.resources_table.setHorizontalHeaderLabels(["目标图层", "类型", "坐标系", "检查结果"])
         self.resources_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -679,7 +691,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.back_button = QPushButton("调整数据")
         self.back_button.clicked.connect(lambda: self._set_step(0))
-        self.execute_button = QPushButton("确认并发布")
+        self.execute_button = QPushButton("确认并自动发布")
         self.execute_button.setObjectName("primary")
         self.execute_button.setEnabled(False)
         self.execute_button.clicked.connect(self._confirm_run)
@@ -774,7 +786,11 @@ class MainWindow(QMainWindow):
         title = QLabel("环境设置")
         title.setObjectName("title")
         outer.addWidget(title)
-        hint = QLabel("首次使用只需填写服务器地址、工作空间和本次登录信息，再点「测试连接」。下方高级设置平时无需修改。")
+        hint = QLabel(
+            "首次设置 GeoServer 地址、工作空间和本次管理员账号即可。"
+            "常规发布使用 GeoServer REST 自动上传，不要求 Linux SSH/Xftp。"
+            "数据与密码仅在你授权的服务器连接中传输。"
+        )
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         outer.addWidget(hint)
@@ -1762,6 +1778,32 @@ class MainWindow(QMainWindow):
         self.session_username.clear()
         self.session_password.clear()
 
+    def _restore_last_environment(self) -> None:
+        """Restore only a saved non-secret server profile; never auto-connect."""
+        raw = self._preferences.value("last_environment_file", "")
+        if not isinstance(raw, str) or not raw:
+            return
+        path = Path(raw)
+        if path.suffix.lower() != ".json" or not path.is_file() or path.is_symlink():
+            return
+        try:
+            self.apply_environment(Environment.load(path))
+            self.connection_status.setText(
+                "已恢复上次环境（不含密码）。确认服务器地址后，输入本次凭据并测试连接。"
+            )
+        except (ConfigError, ValueError, OSError):
+            # Do not break startup because of an old/moved operator profile.
+            return
+
+    def _remember_environment_file(self, path: Path | str) -> None:
+        """Keep a path to a profile, not a username/password or live session."""
+        try:
+            Path(self._preferences.fileName()).parent.mkdir(parents=True, exist_ok=True)
+            self._preferences.setValue("last_environment_file", str(Path(path).resolve()))
+            self._preferences.sync()
+        except OSError:
+            pass
+
     def _choose_environment(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "载入环境档案", str(self._work_dir), "JSON 环境档案 (*.json)"
@@ -1769,7 +1811,8 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 self.apply_environment(Environment.load(path))
-                self.activity.setText("已载入环境档案。")
+                self._remember_environment_file(path)
+                self.activity.setText("已载入环境档案，下次启动自动恢复服务器配置（不含密码）。")
             except (ConfigError, ValueError) as exc:
                 QMessageBox.warning(self, "环境档案无效", str(exc))
 
@@ -1791,6 +1834,8 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 self.save_environment(path)
+                self._remember_environment_file(path)
+                self.activity.setText("服务器环境已保存，下次自动恢复地址与工作空间；密码仅本次会话有效。")
             except OSError:
                 QMessageBox.warning(self, "无法保存", "请检查文件路径和目录写入权限。")
 
@@ -1855,6 +1900,22 @@ class MainWindow(QMainWindow):
                 "请点「核对图幅关系」，确认编号归组；单层多幅须先拆分。"
             )
         self.plan_summary.setText(summary)
+        # The ordinary workflow already streams the checked ZIP via GeoServer
+        # REST file.shp. Server-side GeoServer DATA_DIR owns the uploaded copy;
+        # the Windows source can then go offline. SSH/Xftp is advanced only.
+        automatic = all(resource.get("kind") == "shapefile" for resource in resources)
+        if automatic:
+            self.delivery_mode_note.setText(
+                "发布方式：自动上传到 GeoServer 服务器数据目录（SHP → ZIP → REST → 图层 → SLD → WMS）。"
+                "无需手动压缩、Xftp 上传或 Xshell 命令。"
+                "断开本机后仍由服务器提供地图；服务器数据目录必须位于持久磁盘并纳入备份。"
+            )
+        else:
+            self.delivery_mode_note.setText(
+                "发布方式：自动上传 GeoServer 支持的 SHP ZIP / 独立 GeoTIFF 文件，"
+                "服务器存储并创建图层。影像金字塔和镶嵌数据仍需单独核验。"
+                "无需 Xftp/Xshell，服务器数据目录须持久化。"
+            )
         self.resources_table.setRowCount(len(resources))
         details = []
         blocked_count = sum(len(item.get("blocking_errors", [])) for item in resources)
@@ -1864,7 +1925,10 @@ class MainWindow(QMainWindow):
         elif _needs_raster_confirmation(plan):
             advice = "多个 TIFF 的独立发布确认尚未记录。返回上一步明确勾选，再重新检查。"
         else:
-            advice = f"检查通过。共有 {warning_count} 条提醒，请核对下方信息，再按「确认并发布」。"
+            advice = (
+                f"检查通过。共有 {warning_count} 条提醒，"
+                "核对图层和目标服务器后点击「确认并自动发布」，其余步骤由工作台完成。"
+            )
         self.review_guidance.setText(advice)
         for row, resource in enumerate(resources):
             errors, warnings = resource.get("blocking_errors", []), resource.get("warnings", [])
@@ -1940,14 +2004,38 @@ class MainWindow(QMainWindow):
             )
             return
         raster_summary = _raster_summary(self._plan)
+        import urllib.parse
+
+        parsed = urllib.parse.urlsplit(env["base_url"])
+        remote_http = parsed.scheme == "http" and parsed.hostname not in {
+            "localhost", "127.0.0.1", "::1",
+        }
+        if remote_http and not env.get("allow_http"):
+            QMessageBox.warning(self, "HTTPS 保护尚未启用", "默认不允许向未授权 HTTP 服务器发送管理员凭据。")
+            return
+        http_warning = (
+            "\n安全提醒：当前使用 HTTP（非加密），管理员凭据和图件会经过已授权内网传输。"
+            "建议先配置 HTTPS；仅在明确允许的可信隔离内网继续。\n"
+            if remote_http else ""
+        )
+        size_bytes = 0
+        for resource in self._plan["resources"]:
+            artifact_path = resource.get("artifact", {}).get("path")
+            if artifact_path and Path(artifact_path).is_file():
+                size_bytes += Path(artifact_path).stat().st_size
+        upload_mb = size_bytes / (1024 * 1024)
         message = (
-            f"准备发布到：{env['base_url']}\n工作空间：{env['workspace']}\n"
-            f"本次图层：{len(self._plan['resources'])} 个\n"
+            f"服务器：{env['base_url']}\n工作空间：{env['workspace']}\n"
+            f"图层数量：{len(self._plan['resources'])} 个  ·  上传副本约 {upload_mb:.1f} MB\n"
             f"同名处理：{_STRATEGY_LABELS.get(self._plan['strategy'], self._plan['strategy'])}\n"
             + (raster_summary + "\n" if raster_summary else "")
-            + "\n确认后才会向 GeoServer 上传副本、创建图层和样式，并请求 WMS 验证。\n"
-            "源文件不会被修改；已有数据不会原位覆盖；业务目录/数据库不会自动写入。\n"
-            "如果发布中断，请先检查任务报告，不要直接重复上传。"
+            + "\n自动流程：检查整批资源冲突 → 上传到 GeoServer 服务器数据目录 → "
+            "创建图层 → 绑定样式 → WMS 验证。\n"
+            "无需手动压缩、Xftp、Xshell 或远程执行命令。"
+            "本机源文件不会更改；业务数据库不会自动写入。\n"
+            "GeoServer 数据目录应位于服务器持久磁盘；请确认已纳入备份。"
+            + http_warning
+            + "\n如果中断，请先查看任务报告，不要盲目重复发布。确定开始？"
         )
         answer = QMessageBox.question(
             self,
@@ -1966,7 +2054,10 @@ class MainWindow(QMainWindow):
         self.run_log.clear()
         self.result_title.setText("正在发布")
         self.result_summary.setText(f"工作空间：{env['workspace']}  ·  {len(plan['resources'])} 个图层")
-        self.result_guidance.setText("正在执行已确认的任务。下方将显示地图预览；需要排查时可展开「运行详情」。")
+        self.result_guidance.setText(
+            "自动流程：逐图层上传服务器副本、注册图层、绑定 SLD、WMS 验收。"
+            "无须人工执行上传命令；异常会在任务日志中记录，可安全取消后核查。"
+        )
         self.detail_button.setChecked(False)
         self.preview.clear()
         self.preview.setText("等待 GeoServer 实际 WMS 地图。")

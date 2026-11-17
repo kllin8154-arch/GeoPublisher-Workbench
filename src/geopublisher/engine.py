@@ -217,8 +217,12 @@ def cleanup_recovery_inventory(plan: dict, journal: Journal) -> dict:
 
 
 class Publisher:
-    def __init__(self, plan: dict, journal: Journal, client, on_event=None, cancel_event=None):
+    def __init__(
+        self, plan: dict, journal: Journal, client, on_event=None, cancel_event=None,
+        *, staged_paths: dict[str, str] | None = None,
+    ):
         self.plan, self.journal, self.client = plan, journal, client
+        self.staged_paths = staged_paths or {}
         self.task_id = plan["task_id"]
         self.workspace = plan["environment"]["workspace"]
         self.on_event, self.cancel_event = on_event, cancel_event
@@ -328,6 +332,11 @@ class Publisher:
         previous = [op for op in self.journal.operations(self.task_id, rid) if op["action"] == action]
         if previous:
             last = previous[-1]
+            if last.get("expected") != expected:
+                raise RecoveryRequired(
+                    "同一任务的发布来源/服务器路径与已记录的操作意图不同；"
+                    "禁止在本地上传与服务器预置数据之间静默切换。"
+                )
             if last["outcome"] in {"SUCCEEDED", "INTENT", "UNKNOWN"}:
                 for kind in kinds:
                     self.assert_owned(resource, kind)
@@ -396,18 +405,27 @@ class Publisher:
             if self.current(resource, kind) is not None and not self.owned(resource, kind):
                 raise RecoveryRequired(f"目标 {kind} 已存在且没有本任务所有权记录；需人工核对。")
 
+        remote_shp = self.staged_paths.get(rid)
+        if remote_shp:
+            def create_store():
+                return self.client.register_external_shapefile(
+                    self.workspace, resource["store_name"], remote_shp,
+                    encoding=resource["inspection"].get("encoding"),
+                )
+        else:
+            def create_store():
+                return self.client.upload_dataset(
+                    self.workspace, resource["store_name"], resource["kind"],
+                    Path(resource["artifact"]["path"]),
+                    encoding=resource["inspection"].get("encoding"),
+                )
         self.write(
-            resource,
-            "UPLOAD",
-            ["store"],
-            lambda: self.client.upload_dataset(
-                self.workspace,
-                resource["store_name"],
-                resource["kind"],
-                Path(resource["artifact"]["path"]),
-                encoding=resource["inspection"].get("encoding"),
-            ),
-            expected={"artifact_sha256": resource["artifact"]["sha256"]},
+            resource, "UPLOAD", ["store"], create_store,
+            expected={
+                "artifact_sha256": resource["artifact"]["sha256"],
+                **({"upload_mode": "STAGED_SERVER_PATH", "server_shp_path": remote_shp}
+                   if remote_shp else {}),
+            },
         )
         self.assert_owned(resource, "store")
         self.write(
@@ -576,7 +594,8 @@ class Publisher:
 
 
 def run_plan(
-    plan: dict, journal_path=None, *, credentials=None, on_event=None, cancel_event=None, client=None
+    plan: dict, journal_path=None, *, credentials=None, on_event=None, cancel_event=None,
+    client=None, staged_paths: dict[str, str] | None = None,
 ) -> dict:
     """Execute or resume a confirmed plan. A caller must obtain task-level consent."""
     plan = copy.deepcopy(plan)
@@ -588,6 +607,24 @@ def run_plan(
     if not plan.get("ready"):
         raise ConfigError("PREFLIGHT_BLOCKED", "预检存在阻断问题，不能开始发布。")
     verify_artifacts(plan)
+    staged_paths = staged_paths or {}
+    if staged_paths:
+        from .geoserver import _name
+        from .server_deploy import _folder
+
+        valid_ids = {r["resource_id"] for r in plan["resources"]}
+        if set(staged_paths) != valid_ids or any(
+            resource["kind"] != "shapefile" for resource in plan["resources"]
+        ):
+            raise ConfigError(
+                "STAGED_PLAN_MISMATCH", "服务器预置文件必须与已核验计划的全部 SHP 一一对应。"
+            )
+        for path in staged_paths.values():
+            if not isinstance(path, str) or not path.startswith("/") or not path.endswith(".shp"):
+                raise ConfigError("STAGED_PATH_INVALID", "服务器 SHP 绝对路径格式无效。")
+            # Same strict absolute path policy as the existing SSH archive stage.
+            _folder(path.rsplit("/", 1)[0])
+            _name(Path(path).stem)
     environment = Environment(**plan["environment"])
     output = Path(plan["output_dir"])
     # A shared parent journal coordinates separate task directories on this machine.
@@ -608,7 +645,9 @@ def run_plan(
         with Journal(journal_path) as journal:
             journal.create_task(plan["task_id"], plan)
             journal.recover_locks(plan["task_id"])
-            publisher = Publisher(plan, journal, client, on_event, cancel_event)
+            publisher = Publisher(
+                plan, journal, client, on_event, cancel_event, staged_paths=staged_paths,
+            )
             results = []
             started = False
             try:

@@ -127,6 +127,21 @@ def parser() -> argparse.ArgumentParser:
     server_plan.add_argument("--plan", type=Path, required=True)
     server_plan.add_argument("--geoserver-user", required=True)
     server_plan.add_argument("--yes", action="store_true", help="已确认计划、目标服务器及新图层")
+    vector_bundle = sub.add_parser(
+        "server-vector-bundle",
+        help="将已验签的 SHP 发布计划封装为服务器持久数据包（纯本机，不上传）",
+    )
+    vector_bundle.add_argument("--plan", required=True, type=Path)
+    vector_bundle.add_argument("--output", required=True, type=Path, help="全新本机目录，不能覆盖")
+    vector_publish = sub.add_parser(
+        "server-publish-staged-vector",
+        help="先核验服务器已上传/解包的 SHP SHA256，再经 SSH 内网隧道发布",
+    )
+    vector_publish.add_argument("--profile", type=Path, required=True, help="受控内网 SSH 配置")
+    vector_publish.add_argument("--plan", type=Path, required=True)
+    vector_publish.add_argument("--archive", type=Path, required=True, help="原本机发布包 tar")
+    vector_publish.add_argument("--manifest", type=Path, required=True, help="同批 vector-release.json")
+    vector_publish.add_argument("--geoserver-user", required=True, help="现场 GeoServer REST 账号")
     db_check = sub.add_parser(
         "server-catalog-doctor",
         help="SSH 隧道连接业务 PostgreSQL：仅核对真实字段、父节点和服务冲突，输出本机证据，不写库",
@@ -152,6 +167,52 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "server-vector-bundle":
+            from .server_vector import bundle_vector_plan
+
+            _print(bundle_vector_plan(args.plan, args.output))
+            return 0
+        if args.command == "server-publish-staged-vector":
+            from .server_deploy import LinuxTarget, open_target
+            from .server_plan import publish_plan_via_tunnel, validate_server_binding
+            from .server_vector import verify_vector_release
+
+            target = LinuxTarget.load(args.profile)
+            plan = load_plan(args.plan)
+            validate_server_binding(plan, target)
+            if not sys.stdin.isatty():
+                raise ValueError("服务器 SHP 发布必须在本机终端交互核对，不能无人值守执行。")
+            ssh_pass = (
+                getpass.getpass("SSH 登录密码（仅本次内存使用）：")
+                if target.mode == "ssh" and target.auth == "password" else None
+            )
+            key_pass = (
+                getpass.getpass("SSH 私钥口令（留空表示无）：") or None
+                if target.mode == "ssh" and target.auth == "key" else None
+            )
+            with open_target(target, password=ssh_pass, passphrase=key_pass) as session:
+                bindings = verify_vector_release(
+                    args.plan, args.archive, args.manifest, target, session,
+                )
+                _print({
+                    "status": "SERVER_SHP_HASHES_VERIFIED_NOT_PUBLISHED",
+                    "target": target.safe_info(),
+                    "workspace": plan["environment"]["workspace"],
+                    "count": len(bindings),
+                    "data_source": "SERVER_LINUX_LOCAL_FILES",
+                    "business_database_modified": False,
+                })
+                if input("确认所有上传文件已核对，输入 PUBLISH_STAGED_SHP：").strip() != "PUBLISH_STAGED_SHP":
+                    _print({"status": "NOT_AUTHORIZED", "server_geoserver_modified": False})
+                    return 2
+                rest_pass = getpass.getpass("GeoServer REST 密码（不保存）：")
+                result = publish_plan_via_tunnel(
+                    target, args.plan, session,
+                    username=args.geoserver_user, password=rest_pass,
+                    staged_paths=bindings,
+                )
+            _print(result)
+            return 0 if result["status"] in {"SUCCEEDED", "REVIEW_REQUIRED"} else 3
         if args.command == "server-catalog-register":
             from .catalog_live import review_mapping
             from .catalog_register import register_catalog, registration_phrase

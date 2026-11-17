@@ -2,6 +2,8 @@
 
 适用：Windows/macOS/Linux 电脑与 Linux GeoServer 服务器处于经授权的同一局域网；或工作台直接运行在 Linux 服务器上。
 
+**SHP 服务器持久化：** 默认 REST `file.shp` 上传就是由 GeoServer 在服务器端持久保存，不依赖 Windows 开机。本地无法替代正式的 GeoServer 数据目录持久性验证。大批量时可选用 Xftp/SFTP 上传预制 SHP tar，完成远端 SHA256 后再使用 GeoServer REST `external.shp` 注册真实服务器路径，详细参见 [服务器 SHP 持久化发布](SERVER-SHP-PERSISTENCE.md)。
+
 ## 设计：分段发布，避免“文件上传成功=图层已经入库”
 
     MXD/GDB/SHP/TIFF

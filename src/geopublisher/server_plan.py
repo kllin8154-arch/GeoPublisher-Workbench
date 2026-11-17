@@ -35,6 +35,7 @@ def publish_plan_via_tunnel(
     username: str,
     password: str,
     journal_path: Path | str | None = None,
+    staged_paths: dict[str, str] | None = None,
     on_event=None,
     cancel_event=None,
 ) -> dict:
@@ -56,8 +57,9 @@ def publish_plan_via_tunnel(
         with GeoServerClient(port.geoserver_url, username, password, timeout=180) as client:
             result = run_plan(
                 plan, journal_path=journal_path, client=client,
-                on_event=on_event, cancel_event=cancel_event,
+                on_event=on_event, cancel_event=cancel_event, staged_paths=staged_paths,
             )
     result["transport"] = "SSH_LOOPBACK" if target.mode == "ssh" else "LINUX_LOOPBACK"
+    result["data_transfer"] = "VERIFIED_SERVER_FILES" if staged_paths else "REST_COPY_TO_GEOSERVER"
     result["business_sql_executed"] = False
     return result

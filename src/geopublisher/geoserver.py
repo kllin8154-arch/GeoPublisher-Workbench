@@ -478,6 +478,48 @@ class GeoServerClient:
         )
         return self._evidence(response, "PUT", "upload_dataset")
 
+    def register_external_shapefile(
+        self, workspace: str, store: str, server_path: str, *, encoding: str | None = None,
+    ) -> dict:
+        """Register only a verified server-local SHP; NEVER read D:/ or E:/.
+
+        The caller must confirm archive and component SHA256 via the pinned
+        Linux SSH session before invoking this method. This step creates a
+        store only; feature type, SLD and WMS still use the journaled engine.
+        """
+        workspace, store = _name(workspace), _name(store)
+        if (
+            not isinstance(server_path, str)
+            or not server_path.startswith("/")
+            or not server_path.endswith(".shp")
+            or len(server_path) > 4096
+            or "\\" in server_path
+            or any(part in ("", ".", "..") for part in server_path.split("/")[1:])
+            or any(ord(char) < 32 or char.isspace() for char in server_path)
+            or not server_path.startswith(("/zbcx/", "/srv/", "/opt/", "/data/", "/mnt/"))
+        ):
+            raise GeoServerError(
+                "INVALID_EXTERNAL_PATH", "The staged SHP must be an approved absolute Linux data file."
+            )
+        if self.get_store(workspace, store, "shapefile") is not None:
+            raise GeoServerError(
+                "CONFLICT", "Refusing to re-register or overwrite an existing SHP store.", status_code=409
+            )
+        if encoding is not None and not _ENCODING.fullmatch(encoding):
+            raise GeoServerError("INVALID_ENCODING", "The Shapefile encoding name is not safe.")
+        params = {"configure": "none"}
+        if encoding:
+            params["charset"] = encoding
+        response = self._request(
+            "PUT",
+            f"/rest/workspaces/{workspace}/datastores/{store}/external.shp",
+            operation="register verified server-local shapefile",
+            params=params,
+            content=("file://" + server_path).encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=UTF-8"},
+        )
+        return self._evidence(response, "PUT", "register_external_shapefile")
+
     def register_external_raster(
         self, workspace: str, store: str, layer: str,
         kind: str, server_path: str,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -315,6 +316,7 @@ class MainWindow(QMainWindow):
         self._worker_success: Callable | None = None
         self._cancel = threading.Event()
         self._connection_testing = False
+        self._connection_ready = False
         self._pending_gdb_conversion = None
         self._pending_sheet_inspection = None
         self._pending_sheet_export = None
@@ -787,9 +789,10 @@ class MainWindow(QMainWindow):
         title.setObjectName("title")
         outer.addWidget(title)
         hint = QLabel(
-            "首次设置 GeoServer 地址、工作空间和本次管理员账号即可。"
-            "常规发布使用 GeoServer REST 自动上传，不要求 Linux SSH/Xftp。"
-            "数据与密码仅在你授权的服务器连接中传输。"
+            "① 填写 GeoServer 后台地址及工作空间  →  "
+            "② 输入 GeoServer 管理账号与密码  →  "
+            "③ 只读测试成功后前往发布。"
+            "不需要 Linux root、Xshell 或数据库账号。"
         )
         hint.setObjectName("muted")
         hint.setWordWrap(True)
@@ -814,14 +817,17 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         form.setVerticalSpacing(12)
         self.env_key = QLineEdit("local-test")
-        self.base_url = QLineEdit("http://127.0.0.1:8080/geoserver")
-        self.workspace = QLineEdit("geopub")
+        self.env_key.setPlaceholderText("例如 test-site，仅用于区分配置，可自行命名")
+        self.base_url = QLineEdit()
+        self.base_url.setPlaceholderText("粘贴 GeoServer 后台地址，例如 https://host/geoserver")
+        self.workspace = QLineEdit()
+        self.workspace.setPlaceholderText("填 GeoServer 后台“工作空间”里已存在的名称")
         self.gdal_bin = QLineEdit(controlled_gdal_bin())
         self.gdal_bin.setPlaceholderText("选择包含 gdalinfo、ogrinfo 等命令的受控目录")
         self.gdal_version = QLineEdit("3.13.3")
         self.ca_bundle = QLineEdit()
         self.ca_bundle.setPlaceholderText("自签名证书环境可选择 CA 文件")
-        self.allow_http = QCheckBox("允许此已授权内网环境使用 HTTP")
+        self.allow_http = QCheckBox("允许已授权的隔离内网 HTTP（账号和数据不加密）")
         self.timeout = QSpinBox()
         self.timeout.setRange(1, 3600)
         self.timeout.setValue(120)
@@ -829,48 +835,83 @@ class MainWindow(QMainWindow):
         self.username_env = QLineEdit("GEOPUB_USERNAME")
         self.password_env = QLineEdit("GEOPUB_PASSWORD")
         self.session_username = QLineEdit()
-        self.session_username.setPlaceholderText("可留空，执行时从指定环境变量读取")
+        self.session_username.setPlaceholderText("例如 admin；不是 Linux root / 数据库账号")
         self.session_password = QLineEdit()
         self.session_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.session_password.setPlaceholderText("仅保存在本次进程内存")
-        self.base_url.setToolTip("例如 https://your-geoserver.example/geoserver。默认的 127.0.0.1 地址仅是示例，并非已连接。")
+        self.session_password.setPlaceholderText("GeoServer 网页管理密码，不是服务器 SSH 密码")
+        self.base_url.setToolTip("填 GeoServer 网页管理后台的根地址，如 https://host/geoserver。不填写 Xshell/SSH 地址；127.0.0.1 只有本机服务或正确端口转发时才有效。")
         self.workspace.setToolTip("GeoServer 中已创建的工作空间名称，不是数据库名称；工具不会自动创建。")
         self.gdal_bin.setToolTip("便携版自动寻找随包的受控 GDAL；找不到时才需要手动选择目录。")
         self.session_username.setToolTip("GeoServer 登录用户名，仅在本次会话内使用。")
         self.session_password.setToolTip("GeoServer 登录密码，不会写入环境档案、任务计划或报告。")
+        connection_heading = QLabel("① GeoServer 服务地址和工作空间")
+        connection_heading.setObjectName("step")
+        inner_layout.addWidget(connection_heading)
         for label, widget in (
-            ("环境名称", self.env_key),
-            ("GeoServer 服务地址", self.base_url),
-            ("已有工作空间", self.workspace),
-            ("GDAL 目录", self._path_row(self.gdal_bin, self._choose_gdal)),
-            ("本次用户名", self.session_username),
-            ("本次密码", self.session_password),
+            ("配置名称（自定义）", self.env_key),
+            ("GeoServer 后台地址", self.base_url),
+            ("工作空间（Workspace）", self.workspace),
+            ("本机 GDAL 目录", self._path_row(self.gdal_bin, self._choose_gdal)),
         ):
             form.addRow(label, widget)
         inner_layout.addLayout(form)
-        tip = QLabel("提示：这里的默认服务器地址只是示例。先点「测试连接（只读）」，成功后再回到发布任务。")
-        tip.setObjectName("muted")
-        tip.setWordWrap(True)
-        inner_layout.addWidget(tip)
-        self.advanced_settings_button = QPushButton("展开高级设置（证书、超时、凭据变量等）")
+        scope_tip = QLabel(
+            "服务器地址 = 浏览器打开 GeoServer 管理页面使用的地址；"
+            "工作空间 = 管理后台「工作空间」中的名称，不是数据库。"
+            "GDAL 已随便携版预置，通常不用改。"
+        )
+        scope_tip.setObjectName("muted")
+        scope_tip.setWordWrap(True)
+        inner_layout.addWidget(scope_tip)
+        auth_heading = QLabel("② GeoServer 网页管理账号（不是 Linux / 数据库账号）")
+        auth_heading.setObjectName("step")
+        inner_layout.addWidget(auth_heading)
+        auth_form = QFormLayout()
+        auth_form.setVerticalSpacing(12)
+        auth_form.addRow("GeoServer 登录用户名", self.session_username)
+        auth_form.addRow("GeoServer 登录密码", self.session_password)
+        inner_layout.addLayout(auth_form)
+        auth_note = QLabel(
+            "使用 GeoServer 网页后台的 admin 或其他有发布权限的账号。"
+            "不要填写 208 的 root、SSH 密码或 PostgreSQL 密码。"
+            "密码仅用于本次运行，不会保存到环境档案。"
+        )
+        auth_note.setObjectName("muted")
+        auth_note.setWordWrap(True)
+        inner_layout.addWidget(auth_note)
+        self.http_security_note = QLabel()
+        self.http_security_note.setObjectName("muted")
+        self.http_security_note.setWordWrap(True)
+        inner_layout.addWidget(self.http_security_note)
+        self.advanced_settings_button = QPushButton("高级设置（通常无需修改；内网 HTTP 请在此授权）")
         self.advanced_settings_button.setCheckable(True)
         inner_layout.addWidget(self.advanced_settings_button)
         self.advanced_settings_options = QWidget()
-        advanced = QFormLayout(self.advanced_settings_options)
+        advanced_box = QVBoxLayout(self.advanced_settings_options)
+        advanced_guide = QLabel(
+            "GDAL 版本：保持程序自带的版本。CA 证书：仅在 HTTPS 使用私有证书颁发机构时选择，"
+            "正常 HTTPS 可留空。请求超时：通常 120 秒，大图层可适当增大。"
+            "环境变量名称：仅供无人值守集成，日常登录不需要修改。"
+        )
+        advanced_guide.setObjectName("muted")
+        advanced_guide.setWordWrap(True)
+        advanced_box.addWidget(advanced_guide)
+        advanced = QFormLayout()
         for label, widget in (
-            ("预期 GDAL 版本", self.gdal_version),
-            ("CA 证书", self._path_row(self.ca_bundle, self._choose_ca)),
-            ("", self.allow_http),
-            ("请求超时", self.timeout),
-            ("用户名环境变量", self.username_env),
-            ("密码环境变量", self.password_env),
+            ("受控 GDAL 版本", self.gdal_version),
+            ("HTTPS CA 证书（可选）", self._path_row(self.ca_bundle, self._choose_ca)),
+            ("隔离内网 HTTP 例外", self.allow_http),
+            ("网络请求超时", self.timeout),
+            ("自动化用户名变量", self.username_env),
+            ("自动化密码变量", self.password_env),
         ):
             advanced.addRow(label, widget)
+        advanced_box.addLayout(advanced)
         self.advanced_settings_options.hide()
         self.advanced_settings_button.toggled.connect(self.advanced_settings_options.setVisible)
         self.advanced_settings_button.toggled.connect(
             lambda expanded: self.advanced_settings_button.setText(
-                "收起高级设置" if expanded else "展开高级设置（证书、超时、凭据变量等）"
+                "收起高级设置" if expanded else "高级设置（通常无需修改；内网 HTTP 请在此授权）"
             )
         )
         self._editable.append(self.advanced_settings_button)
@@ -897,7 +938,7 @@ class MainWindow(QMainWindow):
         load = QPushButton("载入环境")
         save = QPushButton("保存环境")
         clear = QPushButton("清除本次凭据")
-        self.connection_test_button = QPushButton("测试连接（只读）")
+        self.connection_test_button = QPushButton("③ 测试 GeoServer 连接（只读）")
         self.connection_test_button.setObjectName("primary")
         load.clicked.connect(self._choose_environment)
         save.clicked.connect(self._save_environment)
@@ -907,11 +948,32 @@ class MainWindow(QMainWindow):
             buttons.addWidget(button)
             self._editable.append(button)
         outer.addLayout(buttons)
-        self.connection_status = QLabel("尚未测试连接。测试只读取服务器版本和工作空间，不会上传或修改数据。")
+        self.connection_status = QLabel("③ 尚未测试连接。测试只读取 GeoServer 版本和工作空间，不修改数据。")
         self.connection_status.setObjectName("muted")
         self.connection_status.setTextFormat(Qt.TextFormat.PlainText)
         self.connection_status.setWordWrap(True)
         outer.addWidget(self.connection_status)
+        self.create_test_workspace_button = QPushButton(
+            "仅用于新测试：创建独立 GeoServer 测试工作空间"
+        )
+        self.create_test_workspace_button.setToolTip(
+            "只允许创建名称以 geopub_auto_smoke_ 开头的全新 Workspace。"
+            "需要 GeoServer 管理账号，并要求二次确认；绝不覆盖已有空间。"
+        )
+        self.create_test_workspace_button.clicked.connect(self._create_test_workspace)
+        outer.addWidget(self.create_test_workspace_button)
+        self._editable.append(self.create_test_workspace_button)
+        next_row = QHBoxLayout()
+        next_row.addStretch()
+        self.goto_tasks_button = QPushButton("连接成功后进入发布任务")
+        self.goto_tasks_button.setObjectName("primary")
+        self.goto_tasks_button.setEnabled(False)
+        self.goto_tasks_button.clicked.connect(lambda: self._navigate(0))
+        next_row.addWidget(self.goto_tasks_button)
+        outer.addLayout(next_row)
+        self.base_url.textChanged.connect(self._update_http_security_note)
+        self.allow_http.toggled.connect(self._update_http_security_note)
+        self._update_http_security_note()
         for edit in (
             self.env_key, self.base_url, self.workspace, self.ca_bundle,
             self.username_env, self.password_env, self.session_username, self.session_password,
@@ -921,9 +983,42 @@ class MainWindow(QMainWindow):
         self.timeout.valueChanged.connect(self._connection_invalidated)
         return container
 
+    def _update_http_security_note(self, *_: object) -> None:
+        """Explain HTTP risks in the main form, even when advanced options are hidden."""
+        from urllib.parse import urlsplit
+
+        url = self.base_url.text().strip()
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname
+        except ValueError:
+            host, parts = None, None
+        if not host:
+            message = "连接类型：尚未填写 GeoServer 地址。请填写后台地址，而非服务器 SSH 地址。"
+        elif parts.scheme == "http" and host not in {"localhost", "127.0.0.1", "::1"}:
+            if self.allow_http.isChecked():
+                message = (
+                    "当前使用未加密 HTTP；已经打开隔离内网例外。"
+                    "GeoServer 管理凭据和上传数据在传输中没有 TLS 加密，请仅在已获授权的可信隔离内网使用。"
+                )
+            else:
+                message = (
+                    "当前为未加密 HTTP：如确认是已获授权的隔离内网，请展开高级设置，"
+                    "主动勾选「允许已授权的隔离内网 HTTP」；否则先配置 HTTPS。"
+                )
+        elif parts.scheme == "https":
+            message = "连接类型：HTTPS。使用系统可信证书即可；只有私有 CA 才需在高级设置选择证书。"
+        elif host in {"localhost", "127.0.0.1", "::1"}:
+            message = "本机地址只连接这台电脑；访问远程 GeoServer 请填写服务器地址，或先配置正确的端口转发。"
+        else:
+            message = "GeoServer 地址必须使用 http:// 或 https://，不能填写 SSH/SFTP 地址。"
+        self.http_security_note.setText(message)
+
     def _connection_invalidated(self, *_: object) -> None:
         if not self._building_forms:
-            self.connection_status.setText("连接信息已改变，请重新点「测试连接（只读）」。")
+            self._connection_ready = False
+            self.goto_tasks_button.setEnabled(False)
+            self.connection_status.setText("连接信息已改变，请重新测试 GeoServer 连接（只读）。")
 
     def _check_connection(self) -> None:
         """Only GET /rest/about/version and GET the explicitly selected workspace."""
@@ -935,8 +1030,18 @@ class MainWindow(QMainWindow):
             self.connection_status.setText(f"设置尚未完整：{exc}。")
             return
         username, password = self.session_username.text(), self.session_password.text()
+        self._connection_ready = False
+        self.goto_tasks_button.setEnabled(False)
         if bool(username) != bool(password):
-            self.connection_status.setText("请同时填写本次用户名和密码，或都留空并使用配置的环境变量。")
+            self.connection_status.setText(
+                "请同时填写 GeoServer 网页管理用户名和密码；不是 208 Linux/root 或数据库密码。"
+            )
+            return
+        if not username and (not os.environ.get(env.username_env) or not os.environ.get(env.password_env)):
+            self.connection_status.setText(
+                "请填写 GeoServer 网页后台的登录账号和密码。"
+                "仅通过环境变量集成的管理员才可以留空。"
+            )
             return
 
         def probe(_on_event: Callable) -> dict:
@@ -959,6 +1064,73 @@ class MainWindow(QMainWindow):
         self.connection_status.setText("正在只读检测服务器版本和工作空间，不会上传或修改任何文件。")
         self._start_worker(probe, self._show_connection_result)
 
+    def _create_test_workspace(self) -> None:
+        """Explicit, narrow-scoped creation; never create production workspaces."""
+        if self._thread is not None:
+            return
+        try:
+            env = self.environment(connection_only=True)
+        except ConfigError as exc:
+            self.connection_status.setText("创建测试工作空间前，请先配置 GeoServer 地址及 HTTP/HTTPS 权限：" + str(exc))
+            return
+        if not re.fullmatch(r"geopub_auto_smoke_[A-Za-z0-9_]{4,40}", env.workspace):
+            QMessageBox.warning(
+                self, "只允许新建隔离测试空间",
+                "请将 Workspace 改为 geopub_auto_smoke_20261117 等全新测试名称。"
+                "已有生产空间、已验收的 24 图层空间不能通过此按钮修改。",
+            )
+            return
+        username, password = self.session_username.text(), self.session_password.text()
+        if bool(username) != bool(password):
+            self.connection_status.setText("请完整填写 GeoServer 网页管理账号和密码。")
+            return
+        if not username and (not os.environ.get(env.username_env) or not os.environ.get(env.password_env)):
+            self.connection_status.setText("先输入 GeoServer 管理用户名和密码，不是 Linux root。")
+            return
+        answer = QMessageBox.question(
+            self, "确认在 GeoServer 新建空白测试 Workspace",
+            f"服务器：{env.base_url}\n"
+            f"即将新建测试空间：{env.workspace}\n\n"
+            "只创建一个全新的空白测试 Workspace，不修改其他空间或业务数据库。"
+            "没有回滚现有图层的权限；如检查发现同名空间，会拒绝创建。\n"
+            + ("当前是未加密 HTTP，请确认此内网使用已获授权。\n" if env.allow_http else "")
+            + "明确确认才会发送一次创建请求。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def create(_on_event: Callable) -> dict:
+            from .geoserver import GeoServerClient
+
+            user, secret = (username, password) if username and password else env.credentials()
+            with GeoServerClient(
+                env.base_url, user, secret, timeout=env.timeout, verify=env.ca_bundle or True,
+            ) as client:
+                if client.get_workspace(env.workspace) is not None:
+                    raise ConfigError("TEST_WORKSPACE_EXISTS", "测试 Workspace 已存在，没有重复写入。")
+                client.create_workspace(env.workspace)
+                if client.get_workspace(env.workspace) is None:
+                    raise ConfigError(
+                        "TEST_WORKSPACE_VERIFY_FAILED",
+                        "创建响应后未查到 Workspace，请先人工核对服务器，禁止盲目重试。",
+                    )
+            return {"workspace_exists": True, "workspace": env.workspace, "version": "已连接"}
+
+        self._connection_testing = True
+        self._connection_ready = False
+        self.goto_tasks_button.setEnabled(False)
+        self.connection_status.setText("正在新建经确认的空白测试 Workspace，完成后会再次只读核验。")
+        self._start_worker(create, self._show_created_test_workspace)
+
+    def _show_created_test_workspace(self, result: dict) -> None:
+        self._show_connection_result(result)
+        self.connection_status.setText(
+            f"已创建并验证测试工作空间 {result['workspace']}。"
+            "可以点击「连接成功，前往发布任务」导入合成测试图层。"
+        )
+
     def _show_connection_result(self, result: dict) -> None:
         self._connection_testing = False
         version = result.get("version", "未识别")
@@ -976,6 +1148,13 @@ class MainWindow(QMainWindow):
                 f"服务器已连接（GeoServer {version}），但工作空间 {result['workspace']} 不存在。"
                 "请管理员先在 GeoServer 中创建工作空间，再发布。"
             )
+        self._connection_ready = bool(result.get("workspace_exists"))
+        self.goto_tasks_button.setEnabled(
+            self._connection_ready and bool(self.gdal_bin.text().strip()) and self._thread is None
+        )
+        self.goto_tasks_button.setText(
+            "连接成功，前往发布任务 →" if self._connection_ready else "请核对工作空间后重新测试"
+        )
         self.connection_status.setText(message)
         self.activity.setText(message)
 
@@ -2120,6 +2299,9 @@ class MainWindow(QMainWindow):
         )
         self.view_wms_button.setEnabled(not busy and self._result_map_allowed)
         self.result_catalog_button.setEnabled(not busy and self._result_catalog_allowed)
+        self.goto_tasks_button.setEnabled(
+            not busy and self._connection_ready and bool(self.gdal_bin.text().strip())
+        )
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if busy else 1)
 
@@ -2153,7 +2335,12 @@ class MainWindow(QMainWindow):
             return
         self.activity.setText(message)
         if self._connection_testing:
-            self.connection_status.setText("连接未通过：" + message + "。请检查服务器地址、工作空间和凭据。")
+            self._connection_ready = False
+            self.goto_tasks_button.setEnabled(False)
+            self.connection_status.setText(
+                "连接未通过：GeoServer 连接或测试工作空间操作未通过：" + message
+                + "。请确认地址、HTTP 授权、Workspace 和 GeoServer 网页管理凭据。"
+            )
             self._connection_testing = False
             return
         if self.steps.currentIndex() == 2:
@@ -3162,13 +3349,17 @@ class MainWindow(QMainWindow):
             self,
             "GeoPublisher 使用帮助",
             "首次使用（建议先完成环境设置）：\n"
-            "1. 填写 GeoServer 地址、工作空间和本次账号密码，点「测试连接（只读）」。\n"
+            "1. 填 GeoServer 网页后台地址、Workspace 和 GeoServer 管理账号/密码，\n"
+            "   不是 Linux root 或数据库账号；先点「测试连接（只读）」确认服务可用。\n"
             "2. 选择整个 GDB / MXD 或添加 SHP、TIFF。一个 SHP 含多张图幅时，\n"
             "   先点「按图幅字段拆分 SHP」，核对字段与数量后生成各图幅副本。\n"
-            "3. 点「下一步：检查图幅」，确认坐标系与样式，再点「确认并发布」。\n"
+            "3. 点「下一步：检查图幅」，确认坐标系和样式后点「确认并自动发布」。\n"
+            "   工作台自动上传服务器、创建图层，无需人工 Xftp/Xshell。\n"
             "4. 更多工具中可用「图幅空间边界核验」对照标准图框检查实际几何。\n"
             "5. 查看 WMS 验收图，按实际编号核对归组后生成数据库目录草稿。\n\n"
-            "遇到复杂样式、编码或缺失坐标系，再展开高级选项。\n"
+            "在已获授权的隔离内网使用 HTTP 时须展开环境高级设置主动授权；优先 HTTPS。\n"
+            "想建独立测试工作空间，使用环境设置页的创建测试空间按钮。\n"
+            "遇到复杂样式、编码或缺失坐标系，再展开发布任务高级选项。\n"
             "多个 TIFF 必须明确按独立图层发布；Mosaic/Pyramid 拼接暂不支持。\n"
             "遇到失败或未知结果，请先阅读任务报告，不要盲目重试。\n"
             "数据源保持不变，业务数据库不会自动写入。",
